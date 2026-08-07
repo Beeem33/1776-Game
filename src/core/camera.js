@@ -48,11 +48,38 @@ export class ThirdPersonCamera {
     return this.view;
   }
 
+  // Returns the new view when scrolling crosses a view boundary (so the
+  // caller can hide the rider / show a banner), null otherwise.
   handleWheel(deltaY) {
-    if (!deltaY) return;
+    if (!deltaY) return null;
+
+    // Scrolling out of first person drops back to the hip view, close in
+    if (this.view.fp) {
+      if (deltaY > 0) {
+        this.viewIndex = 0;
+        this._zoomTarget = 0.55;
+        return this.view;
+      }
+      return null;
+    }
+
+    const prev = this._zoomTarget;
     this._zoomTarget = THREE.MathUtils.clamp(
-      this._zoomTarget * Math.exp(deltaY * 0.0011), 0.4, 2.4
+      prev * Math.exp(deltaY * 0.0011), 0.4, 2.4
     );
+
+    // Scrolling in while already fully zoomed steps the view closer:
+    // third person -> hip -> first person
+    if (deltaY < 0 && prev <= 0.401) {
+      if (this.viewIndex === 1) {
+        this.viewIndex = 0;
+        this._zoomTarget = 0.8;
+      } else if (this.viewIndex === 0) {
+        this.viewIndex = VIEWS.findIndex((v) => v.fp);
+      }
+      return this.view;
+    }
+    return null;
   }
 
   addShake(amount) {

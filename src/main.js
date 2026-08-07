@@ -40,7 +40,7 @@ class Game {
     this.input = new Input();
     this.ui = new UI();
     this.audio = new AudioManager(this.camera);
-    this.audio.setMuted(true); // audio muted per request — set to false to re-enable everything
+    this.audio.setMuted(false); // sound on — hard-stopped while paused/hidden via _syncAudio
     this.camCtrl = new ThirdPersonCamera(this.camera);
     this.player = new Player(this.scene);
     this.particles = new Particles(this.scene);
@@ -93,6 +93,7 @@ class Game {
         this.input.pointerLocked = false;
         this.state = 'paused';
         this.ui.showScreen('pause');
+        this._syncAudio();
       }
       // F toggles fullscreen and grabs the mouse so it can't leave the game
       if (e.code === 'KeyF' && this.state === 'playing') {
@@ -154,7 +155,22 @@ class Game {
           this.ui.showScreen('pause');
         }
       }
+      this._syncAudio();
     });
+
+    // All sound stops the moment the game isn't the thing on screen:
+    // tab switch / minimize (visibilitychange), window losing focus (blur),
+    // or the page being closed/navigated away (pagehide).
+    document.addEventListener('visibilitychange', () => this._syncAudio());
+    window.addEventListener('blur', () => this.audio.setSuspended(true));
+    window.addEventListener('focus', () => this._syncAudio());
+    window.addEventListener('pagehide', () => this.audio.setSuspended(true));
+  }
+
+  // Sound runs only while actively playing with the game on screen
+  _syncAudio() {
+    const active = this.state === 'playing' && !document.hidden;
+    this.audio.setSuspended(!active);
   }
 
   // Some embedded browsers refuse the Pointer Lock API entirely — run with
@@ -167,6 +183,7 @@ class Game {
     this.state = 'playing';
     this.ui.showScreen('game');
     this.clock.getDelta();
+    this._syncAudio();
   }
 
   // Swap between the white charger and the little tank (lobby only)
@@ -459,6 +476,7 @@ class Game {
     this.ui.showScreen('death');
     if (document.pointerLockElement) document.exitPointerLock();
     this.input.pointerLocked = false;
+    this._syncAudio();
   }
 
   _tick() {
@@ -519,11 +537,24 @@ class Game {
     this._vWasDown = vDown;
 
     // --- player & camera ---
-    this.camCtrl.handleWheel(this.input.consumeWheel());
+    // Scroll wheel zooms; zooming all the way in enters first person,
+    // scrolling back out exits it
+    const wheelView = this.camCtrl.handleWheel(this.input.consumeWheel());
+    if (wheelView) {
+      this.player.setFirstPerson(wheelView.fp);
+      this.ui.showBanner(wheelView.name, 0.9);
+    }
     this.player.update(dt, this.input, this.camCtrl);
     this.player.eyeAnchor.getWorldPosition(this._eyePos);
     this.camCtrl.update(dt, this.player.position, this.input.consumeMouseDelta(), this._eyePos);
     updateSun(this.sun, this.player.position);
+
+    // Sprint FOV kick: the world widens slightly at a full sprint
+    const targetFov = 70 + (this.player.sprinting ? 7 : 0);
+    if (Math.abs(this.camera.fov - targetFov) > 0.05) {
+      this.camera.fov += (targetFov - this.camera.fov) * Math.min(1, 8 * dt);
+      this.camera.updateProjectionMatrix();
+    }
 
     // --- gallop + landing audio ---
     if (!this.player.airborne) this.audio.updateGallop(dt, this.player.speedRatio);

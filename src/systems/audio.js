@@ -31,6 +31,18 @@ export class AudioManager {
     this.listener.setMasterVolume(muted ? 0 : 1);
   }
 
+  // Hard-stop for pause/tab-switch: suspending the AudioContext freezes the
+  // WebAudio clock, so EVERYTHING (loops, positional music, tails of one-shot
+  // SFX) goes silent instantly and resumes exactly where it left off.
+  setSuspended(suspended) {
+    if (!this.ctx) return;
+    if (suspended && this.ctx.state === 'running') {
+      this.ctx.suspend().catch(() => {});
+    } else if (!suspended && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
+  }
+
   // Must be called from a user gesture (the click that engages pointer lock).
   async init() {
     if (this.ready) return;

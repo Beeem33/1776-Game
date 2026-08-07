@@ -757,17 +757,24 @@ export class Player {
     if (input.isDown('KeyD')) move.add(right);
     if (input.isDown('KeyA')) move.sub(right);
 
+    // Shift = sprint: faster cap and harder acceleration, on foot or mounted
+    const sprint = (input.isDown('ShiftLeft') || input.isDown('ShiftRight')) && move.lengthSq() > 0;
+    this.sprinting = sprint;
+
     if (move.lengthSq() > 0 && !this.mounted) {
       // On foot: nimble direct movement, no galloping inertia
       move.normalize();
-      this.velocity.addScaledVector(move, 26 * dt);
-      if (this.velocity.length() > 6.5) this.velocity.setLength(6.5);
+      const footCap = sprint ? 10.5 : 6.5;
+      this.velocity.addScaledVector(move, (sprint ? 38 : 26) * dt);
+      if (this.velocity.length() > footCap) this.velocity.setLength(footCap);
     } else if (move.lengthSq() > 0) {
       move.normalize();
+      const maxSpd = sprint ? MAX_SPEED * 1.4 : MAX_SPEED;
+      const accel = sprint ? ACCEL * 1.3 : ACCEL;
       const speed = this.velocity.length();
       if (speed < 1.5) {
         // From a standstill the horse can step off in any direction
-        this.velocity.addScaledVector(move, ACCEL * dt * 0.6);
+        this.velocity.addScaledVector(move, accel * dt * 0.6);
       } else {
         // At speed the horse carves an arc: its travel direction can only
         // rotate so fast, and asking for a hard reversal bleeds speed first.
@@ -783,11 +790,11 @@ export class Player {
 
         // Alignment: 1 = pushing forward, negative = braking into the turn
         const alignment = Math.cos(desA - newA);
-        let newSpeed = speed + ACCEL * dt * Math.max(alignment, -0.7);
-        newSpeed = THREE.MathUtils.clamp(newSpeed, 0, MAX_SPEED);
+        let newSpeed = speed + accel * dt * Math.max(alignment, -0.7);
+        newSpeed = THREE.MathUtils.clamp(newSpeed, 0, maxSpd);
         this.velocity.set(Math.sin(newA) * newSpeed, 0, Math.cos(newA) * newSpeed);
       }
-      if (this.velocity.length() > MAX_SPEED) this.velocity.setLength(MAX_SPEED);
+      if (this.velocity.length() > maxSpd) this.velocity.setLength(maxSpd);
     } else {
       const damp = Math.max(0, 1 - FRICTION * dt);
       this.velocity.multiplyScalar(damp);
@@ -878,13 +885,19 @@ export class Player {
     // --- locomotion animation ---
     const ratio = this.speedRatio;
     if (!this.mounted) {
-      // Walking on foot: alternate leg swing, light bob
+      // Walking on foot: alternate leg swing, light bob. Sprinting pumps the
+      // legs harder and faster and pitches the whole body into the run.
       const footRatio = Math.min(this.velocity.length() / 6.5, 1);
-      this._footPhase += dt * (3 + footRatio * 9);
-      const swing = Math.sin(this._footPhase) * 0.65 * footRatio;
+      this._footPhase += dt * (3 + footRatio * 9) * (this.sprinting ? 1.35 : 1);
+      const stride = this.sprinting ? 0.95 : 0.65;
+      const swing = Math.sin(this._footPhase) * stride * footRatio;
       this.footLegs[0].rotation.x = swing;
       this.footLegs[1].rotation.x = -swing;
-      this.footRoot.position.y = Math.abs(Math.sin(this._footPhase)) * 0.05 * footRatio;
+      this.footRoot.position.y =
+        Math.abs(Math.sin(this._footPhase)) * (this.sprinting ? 0.09 : 0.05) * footRatio;
+      this.footRoot.rotation.x = THREE.MathUtils.lerp(
+        this.footRoot.rotation.x, this.sprinting ? 0.22 : 0, Math.min(1, 8 * dt)
+      );
     } else if (this.airborne) {
       // Legs tucked mid-jump
       for (const leg of this.legs) {
@@ -893,12 +906,21 @@ export class Player {
       }
       this.meshRoot.position.y = 0;
     } else {
-      this.legPhase += dt * (2 + ratio * 6.5); // unhurried, weighty stride
+      // Sprint = full gallop: quicker stride, bigger leg sweep, deeper bob,
+      // and the horse stretches forward into the run
+      this.legPhase += dt * (2 + ratio * 6.5) * (this.sprinting ? 1.3 : 1);
+      const strideAmp = this.sprinting ? 0.95 : 0.8;
       for (const leg of this.legs) {
         const dir = leg.userData.phaseGroup === 0 ? 1 : -1;
-        leg.rotation.x = Math.sin(this.legPhase) * 0.8 * ratio * dir;
+        leg.rotation.x = Math.sin(this.legPhase) * strideAmp * ratio * dir;
       }
-      this.meshRoot.position.y = Math.abs(Math.sin(this.legPhase)) * 0.12 * ratio;
+      this.meshRoot.position.y =
+        Math.abs(Math.sin(this.legPhase)) * (this.sprinting ? 0.16 : 0.12) * ratio;
+      this.meshRoot.rotation.x = THREE.MathUtils.lerp(
+        this.meshRoot.rotation.x,
+        this.sprinting && ratio > 0.5 ? 0.06 : 0,
+        Math.min(1, 6 * dt)
+      );
     }
 
     this.recoil = Math.max(0, this.recoil - dt * 9);
@@ -926,6 +948,8 @@ export class Player {
     this.jumpOffset = 0;
     this.vy = 0;
     this.airborne = false;
+    this.sprinting = false;
+    this.footRoot.rotation.x = 0;
     this._reloadT = null;
     this._swingT = null;
     this.swordPivot.visible = false;
