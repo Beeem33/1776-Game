@@ -1,10 +1,27 @@
 # 1776
 
-A stylized 3D wave shooter: an American rider on horseback with an Uzi versus
-waves of Redcoat infantry and cavalry on a single foggy colonial battlefield.
-Built with vanilla Three.js.
+**▶ [PLAY NOW — click here](https://beeem33.github.io/1776-Game/)** (free, in your browser, nothing to install)
 
-## Running the game
+A stylized 3D wave shooter: an American rider on horseback with an Uzi versus
+waves of Redcoat infantry, cavalry, and artillery on a single foggy colonial
+battlefield. Built with vanilla Three.js. Desktop browser + mouse required.
+
+## Controls
+
+| Key | Action |
+| --- | --- |
+| **W A S D** | ride / walk |
+| **Mouse** | look & aim |
+| **Left click (hold)** | fire the Uzi — 600 RPM, 32-round mags |
+| **R** | reload |
+| **Space** | jump (mounted) |
+| **E** | dismount / remount your horse |
+| **V** | camera: hip / far / first person |
+| **F** | fullscreen |
+| **Ride into redcoats** | trample for an instant kill |
+| **Esc** | pause / release mouse |
+
+## Running it locally
 
 **No install needed** (Three.js loads via CDN import map in `index.html`):
 
@@ -46,7 +63,7 @@ npm run dev
     │   │                   pitch, gallop bob (on meshRoot so camera is smooth),
     │   │                   reload pose animation, HP/regen
     │   ├── enemy.js        Enemy: detailed Redcoat infantry (musket every 5s)
-    │   │                   & cavalry (200 HP, melee), head = one-shot zone,
+    │   │                   & cavalry (160 HP, melee), head = one-shot zone,
     │   │                   positional music speaker, ragdolls on death
     │   └── ragdoll.js      Death physics: model breaks into tumbling pieces
     │                       with gravity/bounce, fades out, self-disposes
