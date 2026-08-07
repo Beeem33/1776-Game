@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>1776</title>
+  <link rel="stylesheet" href="/src/style.css" />
+  <!-- Runs with zero build tools: 'three' resolves via this import map.
+       If you later install Node and run `npm install && npm run dev`,
+       Vite resolves 'three' from node_modules instead and this map is ignored. -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.166.1/build/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <!-- HUD -->
+  <div id="hud" class="hidden">
+    <div id="crosshair">
+      <div class="ch-dot"></div>
+      <div class="ch-line ch-t"></div>
+      <div class="ch-line ch-b"></div>
+      <div class="ch-line ch-l"></div>
+      <div class="ch-line ch-r"></div>
+    </div>
+
+    <div id="top-bar">
+      <div id="wave-label">WAVE 1</div>
+      <div id="enemies-label">REDCOATS: 0</div>
+      <div id="kills-label">KILLS: 0</div>
+    </div>
+
+    <div id="banner" class="hidden"></div>
+
+    <div id="bottom-left">
+      <div class="bar-title">HEALTH</div>
+      <div class="bar-shell"><div id="hp-fill"></div></div>
+    </div>
+
+    <div id="bottom-center">
+      <div class="bar-title" id="heat-title">UZI HEAT</div>
+      <div class="bar-shell heat-shell"><div id="heat-fill"></div></div>
+    </div>
+
+    <div id="bottom-right">
+      <div class="bar-title">AMMO</div>
+      <div id="ammo-label">32 / 32</div>
+    </div>
+
+    <div id="damage-vignette"></div>
+  </div>
+
+  <!-- START SCREEN -->
+  <div id="overlay-start" class="overlay">
+    <div class="overlay-inner">
+      <h1 class="title">1776</h1>
+      <p class="subtitle">THE MIDNIGHT RIDE. THE UZI. THE RECKONING.</p>
+      <div class="vehicle-choice">
+        <button id="pick-horse" class="vbtn selected">&#127905; WHITE CHARGER</button>
+        <button id="pick-tank" class="vbtn">&#128739; LIGHT TANK</button>
+      </div>
+      <div class="vehicle-hint">Tank: cannon on a 3s cooldown &middot; heavier waves &middot; the redcoats hit harder</div>
+      <div class="click-prompt">— CLICK TO RIDE —</div>
+      <div class="controls">
+        <div><span>W A S D</span> ride the horse</div>
+        <div><span>MOUSE</span> look / aim</div>
+        <div><span>LMB (HOLD)</span> fire uzi &middot; 600 RPM &middot; 32-round mags</div>
+        <div><span>R</span> reload</div>
+        <div><span>SPACE</span> jump (mounted)</div>
+        <div><span>E</span> dismount / mount your horse</div>
+        <div><span>V</span> camera view &middot; hip / far / first person</div>
+        <div><span>F</span> fullscreen &middot; locks the mouse to the game</div>
+        <div><span>TRAMPLE</span> ride through redcoats for an instant kill</div>
+        <div><span>ESC</span> pause / release mouse</div>
+      </div>
+      <p class="fine-print">Warning: contains freedom, fog, and spatial audio.</p>
+    </div>
+  </div>
+
+  <!-- PAUSE SCREEN -->
+  <div id="overlay-pause" class="overlay hidden">
+    <div class="overlay-inner">
+      <h1 class="title small">PAUSED</h1>
+      <div class="click-prompt">— CLICK TO RESUME —</div>
+    </div>
+  </div>
+
+  <!-- DEATH SCREEN -->
+  <div id="overlay-death" class="overlay hidden">
+    <div class="overlay-inner">
+      <h1 class="title dead">YOU DIED</h1>
+      <p class="subtitle" id="death-stats">The redcoats reclaim the field.</p>
+      <div class="click-prompt">— CLICK TO RIDE AGAIN —</div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
