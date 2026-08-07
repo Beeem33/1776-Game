@@ -58,7 +58,7 @@ export class AudioManager {
     // Optional: user-supplied track overrides the synth loop
     try {
       const loaded = await new Promise((resolve) => {
-        new THREE.AudioLoader().load('/enemy_music.mp3', resolve, undefined, () => resolve(null));
+        new THREE.AudioLoader().load('./enemy_music.mp3', resolve, undefined, () => resolve(null));
       });
       if (loaded) b.enemyMusic = loaded;
     } catch (e) { /* keep synth loop */ }

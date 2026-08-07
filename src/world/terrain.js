@@ -316,7 +316,7 @@ function loadGeneratedGroundTexture(material) {
   };
   img.onerror = () => { /* keep the procedural texture */ };
   // Single-file builds embed the texture as a data URI (GROUND_B64)
-  img.src = (typeof GROUND_B64 !== 'undefined') ? GROUND_B64 : '/assets/ground_grass.png';
+  img.src = (typeof GROUND_B64 !== 'undefined') ? GROUND_B64 : './assets/ground_grass.png';
 }
 
 // Dense instanced grass covering the whole battlefield, swaying in the wind
