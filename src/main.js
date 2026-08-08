@@ -30,6 +30,9 @@ class Game {
     this.camera = new THREE.PerspectiveCamera(
       70, window.innerWidth / window.innerHeight, 0.1, 900
     );
+    // The camera must live IN the scene graph or its children (the
+    // first-person gun + arms rig) are silently never rendered
+    this.scene.add(this.camera);
 
     const { sun, smokeSources } = createWorld(this.scene);
     this.sun = sun;
@@ -91,8 +94,9 @@ class Game {
         this.ui.showScreen('pause');
         this._syncAudio();
       }
-      // F toggles fullscreen and grabs the mouse so it can't leave the game
-      if (e.code === 'KeyF' && this.state === 'playing') {
+      // G toggles fullscreen and grabs the mouse so it can't leave the game
+      // (F is the saber strike)
+      if (e.code === 'KeyG' && this.state === 'playing') {
         if (!document.fullscreenElement) {
           document.documentElement.requestFullscreen().then(() => {
             const p = this.canvas.requestPointerLock();
@@ -425,6 +429,37 @@ class Game {
       else if (result === 'too far') this.ui.showBanner('YOUR HORSE IS ELSEWHERE', 1.2);
     }
     this._eWasDown = eDown;
+
+    // --- F: saber strike — swing the sword at anything in front of you ---
+    this.meleeCd = Math.max(0, (this.meleeCd || 0) - dt);
+    const fDown = this.input.isDown('KeyF');
+    if (fDown && !this._fWasDown && this.meleeCd <= 0) {
+      this.meleeCd = 0.7;
+      this.player.swingSword();
+      const fwd = this.camCtrl.getGroundForward();
+      let hitAny = false;
+      for (const e of this.waves.enemies) {
+        if (e.dead || e.dying) continue;
+        const dx = e.group.position.x - this.player.position.x;
+        const dz = e.group.position.z - this.player.position.z;
+        const d = Math.hypot(dx, dz);
+        if (d > 3.8) continue;
+        if ((dx * fwd.x + dz * fwd.z) / Math.max(d, 0.001) < 0.25) continue; // must be in front
+        const impulse = new THREE.Vector3(dx, 0, dz).setLength(9);
+        impulse.y = 5;
+        const killed = e.takeDamage(80, impulse); // one clean cut fells an infantryman
+        hitAny = true;
+        const at = e.group.position.clone();
+        at.y += 1.4;
+        this.particles.blood(at, killed);
+        if (killed) this.waves.onKill();
+      }
+      this.audio.playSfx(hitAny ? 'squish' : 'whistle', {
+        volume: hitAny ? 0.8 : 0.3, rate: hitAny ? 1.1 : 1.7, rateJitter: 0.1,
+      });
+      this.camCtrl.addShake(hitAny ? 0.12 : 0.05);
+    }
+    this._fWasDown = fDown;
 
     // --- camera height follows the ride (saddle / boots) ---
     this.camCtrl.bodyLift = this.player.mounted ? 0 : -1.0;

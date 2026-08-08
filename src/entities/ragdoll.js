@@ -34,12 +34,17 @@ export class Ragdoll {
       : new THREE.Vector3(0, 1, 0);
     this.vel = impulse.clone().multiplyScalar(1.05 + Math.random() * 0.35);
     this.vel.y = Math.min(this.vel.y, 2) + 1.2 + Math.random() * 1.2 + impulse.length() * 0.05;
+    // Sideways scatter so identical shots don't drop identical corpses
+    this.vel.addScaledVector(new THREE.Vector3(-dir.z, 0, dir.x), (Math.random() - 0.5) * 4);
 
     // Tumble around the axis perpendicular to the launch direction
     const tumbleAxis = new THREE.Vector3().crossVectors(UP, dir);
     if (tumbleAxis.lengthSq() < 0.01) tumbleAxis.set(1, 0, 0);
     tumbleAxis.normalize();
-    const spin = 4 + Math.random() * 5;
+    // Spin size AND direction vary: some men whip head-over-heels with the
+    // blow, some against it, some barely turn and simply crumple (the
+    // random-collapse pick at landing decides which way those fall)
+    const spin = (1 + Math.random() * 7.5) * (Math.random() < 0.6 ? 1 : -1);
     this.angVel = new THREE.Vector3(
       tumbleAxis.x * spin + (Math.random() - 0.5) * 3,
       (Math.random() - 0.5) * 4,
@@ -362,6 +367,25 @@ export class Ragdoll {
           // tumble — bodies land on sides, backs, faces, half-twisted
           this.lieX = Math.round(r.x / Math.PI) * Math.PI;
           this.lieZ = Math.round((r.z - Math.PI / 2) / Math.PI) * Math.PI + Math.PI / 2;
+          // A body that lands still nearly upright (bullet kills barely
+          // tumble) would ALWAYS round to the same keel — instead pick the
+          // collapse at random: face-plant, flat on the back, or crumpling
+          // to either side, with a shove of roll momentum to sell it
+          const baseX = Math.round(r.x / Math.PI) * Math.PI;
+          const baseZ = Math.round(r.z / Math.PI) * Math.PI;
+          if (Math.abs(r.x - baseX) < 0.6 && Math.abs(r.z - baseZ) < 0.6) {
+            if (Math.random() < 0.45) {
+              // Pitch over face-first or flat onto the back
+              this.lieX = baseX + (Math.random() < 0.5 ? 1 : -1) * (Math.PI / 2);
+              this.lieZ = baseZ;
+              this.rotVelX += (this.lieX > baseX ? 1.6 : -1.6) + (Math.random() - 0.5);
+            } else {
+              // Keel sideways — either side, never the same one every time
+              this.lieX = baseX;
+              this.lieZ = baseZ + (Math.random() < 0.5 ? 1 : -1) * (Math.PI / 2);
+              this.rotVelZ += (this.lieZ > baseZ ? 1.6 : -1.6) + (Math.random() - 0.5);
+            }
+          }
           this.rotVelX = this.angVel.x * 0.5;
           this.rotVelZ = this.angVel.z * 0.5;
           this._retargetLimbs(0.5);

@@ -33,6 +33,8 @@ export class Enemy {
 
     this.musketTimer = 1.5 + Math.random() * 5; // desync volleys
     this.meleeTimer = 0;
+    this.strikeT = null; // musket-butt swing progress (null = not swinging)
+    this._struck = false;
     this.legPhase = Math.random() * Math.PI * 2;
     this.heading = Math.random() * Math.PI * 2;
 
@@ -535,10 +537,20 @@ export class Enemy {
         moving = true;
       }
 
-      this.musketTimer -= dt;
-      if (this.musketTimer <= 0 && dist < 70) {
-        this.musketTimer = 5; // GDD: one round every 5 seconds
-        this._fireMusket(dist, events, playerPos);
+      if (dist < 3.4) {
+        // Too close for musketry — swing the butt of the Brown Bess instead
+        this.meleeTimer -= dt;
+        if (this.meleeTimer <= 0 && this.strikeT == null) {
+          this.meleeTimer = 1.5;
+          this.strikeT = 0;
+          this._struck = false;
+        }
+      } else {
+        this.musketTimer -= dt;
+        if (this.musketTimer <= 0 && dist < 70) {
+          this.musketTimer = 5; // GDD: one round every 5 seconds
+          this._fireMusket(dist, events, playerPos);
+        }
       }
     } else if (this.type === 'cannon') {
       // Gun crews work the piece from far off: push forward into range,
@@ -596,9 +608,31 @@ export class Enemy {
         moving = true;
       } else {
         this.meleeTimer -= dt;
-        if (this.meleeTimer <= 0) {
-          this.meleeTimer = 1.2;
-          events.push({ type: 'melee', damage: 18, enemy: this });
+        if (this.meleeTimer <= 0 && this.strikeT == null) {
+          this.meleeTimer = 1.3;
+          this.strikeT = 0;
+          this._struck = false;
+        }
+      }
+    }
+
+    // Melee strike animation: the right arm winds up over the shoulder,
+    // then smashes forward. Damage lands mid-swing IF the rider is still
+    // in reach — you can back out of a swing you see coming.
+    if (this.strikeT != null) {
+      this.strikeT += dt / 0.55;
+      const arm = this.limbs.armR;
+      if (this.strikeT >= 1) {
+        this.strikeT = null;
+        if (arm) arm.rotation.x = 0;
+      } else if (arm) {
+        const t = this.strikeT;
+        arm.rotation.x = t < 0.4 ? -(t / 0.4) * 1.9 : -1.9 + ((t - 0.4) / 0.6) * 2.7;
+        if (!this._struck && t >= 0.55) {
+          this._struck = true;
+          if (dist < 4.2) {
+            events.push({ type: 'melee', damage: this.type === 'cavalry' ? 18 : 12, enemy: this });
+          }
         }
       }
     }

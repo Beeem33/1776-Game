@@ -19,7 +19,8 @@ battlefield. Built with vanilla Three.js. Desktop browser + mouse required.
 | **E** | dismount / remount your horse |
 | **V** | camera: hip / far / first person |
 | **Scroll wheel** | zoom — all the way in enters first person |
-| **F** | fullscreen |
+| **F** | saber strike |
+| **G** | fullscreen |
 | **Ride into redcoats** | trample for an instant kill |
 | **Esc** | pause / release mouse |
 
