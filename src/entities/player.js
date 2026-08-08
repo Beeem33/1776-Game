@@ -572,7 +572,11 @@ export class Player {
 
     this.fpAnchor = new THREE.Group();
     this.fpAnchor.rotation.y = Math.PI; // rig +Z = camera forward
-    this.fpAnchor.position.set(0.32, -0.36, -0.38);
+    // Hip pose low-right; holding right-click glides the gun to screen
+    // center for aimed fire
+    this._fpRest = new THREE.Vector3(0.32, -0.36, -0.38);
+    this._fpAim = new THREE.Vector3(-0.026, -0.3, -0.3);
+    this.fpAnchor.position.copy(this._fpRest);
     this.fpAnchor.scale.setScalar(1.3);
     this.fpAnchor.visible = false;
 
@@ -1024,6 +1028,9 @@ export class Player {
     this.recoil = Math.max(0, this.recoil - dt * 9);
     this._applyReloadPose();
     this._updateSword(dt);
+
+    // ADS: the first-person gun glides between hip and centered-aim poses
+    this.fpAnchor.position.lerp(this.aiming ? this._fpAim : this._fpRest, Math.min(1, 12 * dt));
 
     // HP regen after 5s without damage
     this.timeSinceHurt += dt;

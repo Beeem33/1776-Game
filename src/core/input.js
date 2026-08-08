@@ -6,6 +6,7 @@ export class Input {
     this.mouseDX = 0;
     this.mouseDY = 0;
     this.fireHeld = false;
+    this.aimHeld = false;
     this.pointerLocked = false;
 
     window.addEventListener('keydown', (e) => {
@@ -17,7 +18,11 @@ export class Input {
     window.addEventListener('blur', () => {
       this.keys.clear();
       this.fireHeld = false;
+      this.aimHeld = false;
     });
+
+    // Right-click is the aim button — never the browser context menu
+    window.addEventListener('contextmenu', (e) => e.preventDefault());
 
     this.mouseX = window.innerWidth / 2;
     this.mouseY = window.innerHeight / 2;
@@ -37,9 +42,11 @@ export class Input {
 
     document.addEventListener('mousedown', (e) => {
       if (this.pointerLocked && e.button === 0) this.fireHeld = true;
+      if (this.pointerLocked && e.button === 2) this.aimHeld = true;
     });
     document.addEventListener('mouseup', (e) => {
       if (e.button === 0) this.fireHeld = false;
+      if (e.button === 2) this.aimHeld = false;
     });
   }
 

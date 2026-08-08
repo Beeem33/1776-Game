@@ -275,8 +275,8 @@ class Game {
 
   _explodeShell(at, big = false) {
     // Dig a real crater into the terrain (scorch, rim clods, flattened grass)
-    const r = blastCrater(this.scene, at.x, at.z, big ? 2.2 : 1);
-    const k = big ? 2.6 : 1; // effect scale
+    const r = blastCrater(this.scene, at.x, at.z, big ? 2.6 : 1);
+    const k = big ? 3.4 : 1; // effect scale
 
     // Carve nearby house walls into flying rubble
     this._blastHouseChunks(at, r * 0.6 + 1.6);
@@ -315,16 +315,20 @@ class Game {
       if (big) {
         // Rolling secondary fireball + lingering black smoke column
         this.particles.spawnBurst(plume, {
-          color: 0xffb040, count: 30, speed: 5, size: 0.65, life: 0.5, gravity: -4, upBias: 9,
+          color: 0xffb040, count: 44, speed: 7, size: 0.85, life: 0.55, gravity: -4, upBias: 12,
         });
         this.particles.spawnBurst(plume, {
-          color: 0x2c2a26, count: 26, speed: 2.5, size: 1.1, life: 3.2, gravity: -1.4, upBias: 4,
+          color: 0x2c2a26, count: 38, speed: 3, size: 1.4, life: 3.8, gravity: -1.4, upBias: 5,
+        });
+        // Ground-hugging shockwave ring racing out from the impact
+        this.particles.spawnBurst(plume, {
+          color: 0xcabfa8, count: 46, speed: 20, size: 0.5, life: 0.7, gravity: 2, upBias: 0.3,
         });
       }
-      const flash = new THREE.PointLight(0xff9440, big ? 140 : 60, big ? 46 : 30);
+      const flash = new THREE.PointLight(0xff9440, big ? 220 : 60, big ? 62 : 30);
       flash.position.copy(at).y += 2;
       this.scene.add(flash);
-      setTimeout(() => this.scene.remove(flash), big ? 190 : 130);
+      setTimeout(() => this.scene.remove(flash), big ? 240 : 130);
     }
 
     const dPlayer = at.distanceTo(this.player.position);
@@ -333,7 +337,7 @@ class Game {
       rate: big ? 0.8 : 1,
       rateJitter: 0.08,
     });
-    this.camCtrl.addShake(Math.min(big ? 0.85 : 0.45, (big ? 18 : 8) / Math.max(dPlayer, 1)));
+    this.camCtrl.addShake(Math.min(big ? 1.05 : 0.45, (big ? 24 : 8) / Math.max(dPlayer, 1)));
 
     // Blast damage to the rider (spared mid-finisher — cinematic luck)...
     const dmgRadius = big ? 11.5 : 7;
@@ -398,13 +402,21 @@ class Game {
       gunVel: new THREE.Vector3((Math.random() - 0.5) * 1.5, 2.2, (Math.random() - 0.5) * 1.5),
       gunRest: false,
       enemyStart: enemy.group.position.clone(),
-      camSave: { view: this.camCtrl.viewIndex, zoom: this.camCtrl._zoomTarget },
+      camSave: {
+        view: this.camCtrl.viewIndex,
+        zoom: this.camCtrl._zoomTarget,
+        yaw: this.camCtrl.yaw,
+        pitch: this.camCtrl.pitch,
+      },
     };
 
-    // Cinematic frame: drop out of first person, pull back wide
+    // Cinematic frame: drop out of first person, pull back wide and swing
+    // AROUND to face the pair — you watch the kill from the front
     if (this.camCtrl.view.fp) this.player.setFirstPerson(false, this.camera);
     this.camCtrl.viewIndex = 0;
     this.camCtrl._zoomTarget = 1.9;
+    this.camCtrl.yaw = this.player.heading;
+    this.camCtrl.pitch = 0.12;
   }
 
   _updateFinisher(dt) {
@@ -434,14 +446,15 @@ class Game {
     if (E.dying && !F.done) { F.done = true; F.endAt = t; }
 
     if (!E.dying) {
-      // Wrench him into the headlock slot: tight in front, facing away
+      // Wrench him into the headlock slot: pressed hard against the
+      // patriot's chest, facing away — body contact, no daylight between
       const fwd = new THREE.Vector3(Math.sin(P.heading), 0, Math.cos(P.heading));
-      const slot = P.position.clone().addScaledVector(fwd, 0.8);
+      const slot = P.position.clone().addScaledVector(fwd, 0.5);
       slot.y = terrainHeight(slot.x, slot.z);
       const grab = Math.min(1, t / 0.45);
       E.group.position.lerpVectors(F.enemyStart, slot, grab * grab * (3 - 2 * grab));
       E.group.rotation.y = P.heading;
-      E.group.rotation.x = -0.12 * grab; // hauled back on his heels
+      E.group.rotation.x = -0.2 * grab; // hauled back into the patriot's grip
 
       // He struggles — arms clawing, head twisting — fading as the knife works
       const struggle = Math.max(0, 1 - Math.max(0, t - 1.9) / (F.stabs * 0.5));
@@ -456,9 +469,10 @@ class Game {
       }
       if (E.limbs.head) E.limbs.head.rotation.z = wig * 0.12 * struggle;
 
-      // Patriot: left arm clamps around his neck
-      P.armL.rotation.x = P._armLBase.x - 0.9 * grab;
-      P.armL.rotation.z = P._armLBase.z + 0.6 * grab;
+      // Patriot: left arm clamps hard around his neck, body leaning in
+      P.armL.rotation.x = P._armLBase.x - 1.15 * grab;
+      P.armL.rotation.z = P._armLBase.z + 0.7 * grab;
+      P.riderUpper.rotation.x = 0.1 * grab; // shoulders over the hold
 
       // The knife comes out
       if (t >= 1.2 && !F.knifeOut) {
@@ -523,10 +537,13 @@ class Game {
     P.armR.rotation.x = 0;
     P.armL.rotation.x = P._armLBase.x;
     P.armL.rotation.z = P._armLBase.z;
+    P.riderUpper.rotation.x = 0;
 
     // Camera returns to the pre-kill framing
     this.camCtrl.viewIndex = F.camSave.view;
     this.camCtrl._zoomTarget = F.camSave.zoom;
+    this.camCtrl.yaw = F.camSave.yaw;
+    this.camCtrl.pitch = F.camSave.pitch;
     this.player.setFirstPerson(this.camCtrl.view.fp, this.camera);
   }
 
@@ -607,7 +624,10 @@ class Game {
       }
       this._updateShells(dt);
       this.player.eyeAnchor.getWorldPosition(this._eyePos);
-      this.camCtrl.yaw += dt * 0.25; // slow orbiting camera, movie-style
+      // Front-on shot with a gentle handheld sway, movie-style
+      if (this.finisher) {
+        this.camCtrl.yaw = this.player.heading + Math.sin(this.finisher.t * 0.5) * 0.35;
+      }
       this.camCtrl.update(dt, this.player.position, { x: 0, y: 0 }, this._eyePos);
       this.input.consumeMouseDelta();
       this.input.consumeWheel();
@@ -702,6 +722,9 @@ class Game {
     }
     this._vWasDown = vDown;
 
+    // Hold right-click to aim: gun centers on screen, view tightens in
+    this.player.aiming = this.input.aimHeld;
+
     // --- player & camera ---
     // Scroll wheel zooms; zooming all the way in enters first person,
     // scrolling back out exits it
@@ -715,8 +738,8 @@ class Game {
     this.camCtrl.update(dt, this.player.position, this.input.consumeMouseDelta(), this._eyePos);
     updateSun(this.sun, this.player.position);
 
-    // Sprint FOV kick: the world widens slightly at a full sprint
-    const targetFov = 70 + (this.player.sprinting ? 7 : 0);
+    // FOV: widens at a sprint, tightens while aiming down the sight
+    const targetFov = 70 + (this.player.sprinting ? 7 : 0) - (this.player.aiming ? 13 : 0);
     if (Math.abs(this.camera.fov - targetFov) > 0.05) {
       this.camera.fov += (targetFov - this.camera.fov) * Math.min(1, 8 * dt);
       this.camera.updateProjectionMatrix();

@@ -13,6 +13,7 @@ battlefield. Built with vanilla Three.js. Desktop browser + mouse required.
 | **W A S D** | ride / walk |
 | **Mouse** | look & aim |
 | **Left click (hold)** | fire the Uzi — 600 RPM, 32-round mags |
+| **Right click (hold)** | aim down the sight |
 | **R** | reload |
 | **Shift** | sprint |
 | **Space** | jump (mounted) |
