@@ -583,16 +583,17 @@ function blastCrater(scene, x, z, scale = 1) {
     pos.needsUpdate = true;
     _groundGeo.computeVertexNormals();
 
-    // Collapse grass blades caught in the blast bowl
+    // Grass inside the bowl is gone — vaporized, not flattened
     if (_grassMesh) {
       const arr = _grassMesh.instanceMatrix.array;
+      const rr = r * 1.15;
       for (let i = 0; i < _grassMesh.count; i++) {
         const bx = arr[i * 16 + 12];
         const bz = arr[i * 16 + 14];
         const ddx = bx - x;
         const ddz = bz - z;
-        if (ddx * ddx + ddz * ddz < r * r) {
-          for (let c = 0; c < 12; c++) arr[i * 16 + c] *= 0.02;
+        if (ddx * ddx + ddz * ddz < rr * rr) {
+          for (let c = 0; c < 12; c++) arr[i * 16 + c] = 0;
         }
       }
       _grassMesh.instanceMatrix.needsUpdate = true;
@@ -920,8 +921,39 @@ function clearColliders() {
   colliders.length = 0;
 }
 
-function addCircleCollider(x, z, r, isTree = false) {
-  colliders.push({ kind: 'circle', x, z, r, isTree });
+function addCircleCollider(x, z, r, isTree = false, meta = {}) {
+  colliders.push({ kind: 'circle', x, z, r, isTree, ...meta });
+}
+
+// First tree trunk a shot passes through between two world points, or null.
+// 2D ray-circle test with a trunk-height window; returns the bark surface
+// point, its outward normal and the collider, so callers can pock the bark
+// and stop the ball there.
+function treeHitAlong(from, to) {
+  const dx = to.x - from.x;
+  const dz = to.z - from.z;
+  const len2 = dx * dx + dz * dz;
+  if (len2 < 1e-6) return null;
+  let best = null;
+  for (const c of colliders) {
+    if (!c.isTree) continue;
+    const fx = from.x - c.x;
+    const fz = from.z - c.z;
+    const b = 2 * (fx * dx + fz * dz);
+    const cc = fx * fx + fz * fz - c.r * c.r;
+    const disc = b * b - 4 * len2 * cc;
+    if (disc <= 0) continue;
+    const t = (-b - Math.sqrt(disc)) / (2 * len2);
+    if (t <= 0.001 || t >= 0.999) continue;
+    const y = from.y + (to.y - from.y) * t;
+    if (c.baseY != null && (y < c.baseY || y > c.trunkTop)) continue;
+    if (!best || t < best.t) {
+      const px = from.x + dx * t;
+      const pz = from.z + dz * t;
+      best = { t, point: { x: px, y, z: pz }, nx: (px - c.x) / c.r, nz: (pz - c.z) / c.r, tree: c };
+    }
+  }
+  return best;
 }
 
 function addSegmentCollider(x1, z1, x2, z2, r, meta = {}) {
@@ -1060,7 +1092,13 @@ function addTree(parent, x, z, scale) {
   tree.scale.setScalar(scale);
   tree.rotation.y = Math.random() * Math.PI * 2;
   parent.add(tree);
-  addCircleCollider(x, z, 0.55 * scale, true); // trunk blocks movement
+  // Trunk blocks movement AND bullets; mesh ref lets explosions blast the
+  // tree apart and shots pock the bark within the trunk-height window
+  addCircleCollider(x, z, 0.55 * scale, true, {
+    mesh: tree,
+    baseY: tree.position.y,
+    trunkTop: tree.position.y + 3.6 * scale,
+  });
 }
 
 // Low rounded shrub: 2-3 overlapping dark green spheres
@@ -1737,6 +1775,27 @@ class Particles {
       life: 0.95,
       gravity: 12,
       upBias: 2,
+    });
+  }
+
+  // Dark bullet pock pressed into a tree trunk, facing out along the
+  // radial normal, plus a spray of bark chips. Capped FIFO so a long
+  // firefight can't pile up geometry forever.
+  bulletHole(point, nx, nz) {
+    if (!this._holeGeo) {
+      this._holeGeo = new THREE.CircleGeometry(0.07, 8);
+      this._holeMat = new THREE.MeshBasicMaterial({ color: 0x17110b });
+      this._holes = [];
+    }
+    const m = new THREE.Mesh(this._holeGeo, this._holeMat);
+    m.position.set(point.x + nx * 0.03, point.y, point.z + nz * 0.03);
+    m.lookAt(point.x + nx, point.y, point.z + nz);
+    this.scene.add(m);
+    this._holes.push(m);
+    if (this._holes.length > 140) this.scene.remove(this._holes.shift());
+
+    this.spawnBurst(new THREE.Vector3(point.x + nx * 0.12, point.y, point.z + nz * 0.12), {
+      color: 0x6a5138, count: 6, speed: 2.5, size: 0.12, life: 0.5, gravity: 12, upBias: 1,
     });
   }
 
@@ -3354,9 +3413,11 @@ class Player {
     this.fpAnchor = new THREE.Group();
     this.fpAnchor.rotation.y = Math.PI; // rig +Z = camera forward
     // Hip pose low-right; holding right-click glides the gun to screen
-    // center for aimed fire
+    // center for aimed fire; sprinting swings it across the body
+    // (+0.026 compensates the rig's mirrored x so the barrel is dead center)
     this._fpRest = new THREE.Vector3(0.32, -0.36, -0.38);
-    this._fpAim = new THREE.Vector3(-0.026, -0.3, -0.3);
+    this._fpAim = new THREE.Vector3(0.026, -0.3, -0.3);
+    this._fpSprint = new THREE.Vector3(0.16, -0.47, -0.33);
     this.fpAnchor.position.copy(this._fpRest);
     this.fpAnchor.scale.setScalar(1.3);
     this.fpAnchor.visible = false;
@@ -3810,8 +3871,21 @@ class Player {
     this._applyReloadPose();
     this._updateSword(dt);
 
-    // ADS: the first-person gun glides between hip and centered-aim poses
-    this.fpAnchor.position.lerp(this.aiming ? this._fpAim : this._fpRest, Math.min(1, 12 * dt));
+    // First-person gun pose: ADS centers it; sprinting swings it low and
+    // diagonal across the body, pumping with the stride, CoD-style
+    const sprintCarry = this.sprinting && !this.aiming;
+    let fpTarget = this.aiming ? this._fpAim : sprintCarry ? this._fpSprint : this._fpRest;
+    if (sprintCarry) {
+      const ph = this.mounted ? this.legPhase : this._footPhase;
+      fpTarget = fpTarget.clone();
+      fpTarget.y += Math.abs(Math.sin(ph)) * 0.05;
+      fpTarget.x += Math.sin(ph * 0.5) * 0.03;
+    }
+    this.fpAnchor.position.lerp(fpTarget, Math.min(1, 12 * dt));
+    const kFp = Math.min(1, 10 * dt);
+    this.fpAnchor.rotation.x += ((sprintCarry ? 0.32 : 0) - this.fpAnchor.rotation.x) * kFp;
+    this.fpAnchor.rotation.y += ((Math.PI + (sprintCarry ? 0.75 : 0)) - this.fpAnchor.rotation.y) * kFp;
+    this.fpAnchor.rotation.z += ((sprintCarry ? -0.14 : 0) - this.fpAnchor.rotation.z) * kFp;
 
     // HP regen after 5s without damage
     this.timeSinceHurt += dt;
@@ -4209,6 +4283,7 @@ class Enemy {
     c.add(this.cannonTip);
 
     c.position.set(1.15, 0, 0);
+    this.artPiece = c; // stays planted when the crew is killed
     this.group.add(c);
   }
 
@@ -4237,6 +4312,7 @@ class Enemy {
     m.add(this.mortarTip);
 
     m.position.set(0.95, 0, 0.1);
+    this.artPiece = m; // stays planted when the crew is killed
     this.group.add(m);
   }
 
@@ -4557,23 +4633,33 @@ class Enemy {
 
     // Smoothbore muskets are wildly inaccurate — most balls whistle past
     const hitChance = Math.max(0.05, 0.36 - dist * 0.005);
-    const hit = Math.random() < hitChance;
-    if (hit) {
-      events.push({ type: 'musket', damage: 9, enemy: this });
-    }
+    let hit = Math.random() < hitChance;
 
-    // Visible ball trace: a smoky wake along the flight path that drifts
-    // up and dissipates — at the rider on a hit, whistling wide on a miss
-    if (this.particles && playerPos) {
-      const target = playerPos.clone();
+    // Where the ball actually flies — at the rider on a hit, wide on a miss
+    let target = null;
+    if (playerPos) {
+      target = playerPos.clone();
       target.y += 1.9;
       if (!hit) {
         target.x += (Math.random() - 0.5) * 7;
         target.y += (Math.random() - 0.2) * 3;
         target.z += (Math.random() - 0.5) * 7;
       }
-      this.particles.trailSmoke(tip, target);
+      // A trunk in the ball's path soaks it: pocked bark, no damage through
+      const bark = treeHitAlong(tip, target);
+      if (bark) {
+        hit = false;
+        target = new THREE.Vector3(bark.point.x, bark.point.y, bark.point.z);
+        if (this.particles) this.particles.bulletHole(bark.point, bark.nx, bark.nz);
+      }
     }
+
+    if (hit) {
+      events.push({ type: 'musket', damage: 9, enemy: this });
+    }
+
+    // Visible ball trace: a smoky wake along the flight path
+    if (this.particles && target) this.particles.trailSmoke(tip, target);
   }
 
   // impulse: world-space kick applied to the ragdoll
@@ -4642,6 +4728,8 @@ class Enemy {
       this.fleeT = 7;
       this._fleeYaw = this.heading + Math.PI;
     } else {
+      // Gun crews die alone — the piece stays planted where it stood
+      if (this.artPiece) this.scene.attach(this.artPiece);
       // Knock the body flying — every joint flails on its own
       this.ragdoll = new Ragdoll(
         this.scene, this.group, impulse, 0.5,
@@ -4657,11 +4745,15 @@ class Enemy {
     // For cavalry the ragdoll is only the rider — the horse group (or the
     // whole body for foot troops, if no ragdoll ever spawned) goes here
     this.scene.remove(this.group);
+    if (this.artPiece && this.artPiece.parent === this.scene) {
+      this.scene.remove(this.artPiece);
+    }
     // Geometries/materials live in the shared cache — nothing else to free
   }
 }
 
 // ===== src/systems/weapon.js =====
+
 
 const RPM = 450;
 const FIRE_INTERVAL = 60 / RPM;
@@ -4907,6 +4999,15 @@ class Weapon {
             .addScaledVector(this.raycaster.ray.direction, t);
         }
       }
+    }
+
+    // Tree trunks soak bullets: a trunk between you and the mark eats the
+    // ball, pocks the bark, and shields the man hiding behind it
+    const bark = treeHitAlong(this.raycaster.ray.origin, endPoint);
+    if (bark) {
+      endPoint = new THREE.Vector3(bark.point.x, bark.point.y, bark.point.z);
+      hitInfo = null;
+      if (this.particles) this.particles.bulletHole(bark.point, bark.nx, bark.nz);
     }
 
     const muzzlePos = new THREE.Vector3();
@@ -5157,6 +5258,68 @@ class UI {
 
     this._bannerTimer = 0;
     this._vignetteLevel = 0;
+
+    // Screen-blood layer: close-range kills splash gore across the lens
+    this.splatLayer = document.createElement('div');
+    this.splatLayer.style.cssText =
+      'position:fixed;inset:0;pointer-events:none;z-index:30;overflow:hidden;';
+    document.body.appendChild(this.splatLayer);
+    this._splatUrls = [0, 1, 2].map(() => this._makeSplatUrl());
+    this._lastSplatAt = 0;
+  }
+
+  // Painted blood splat (blobs + downward runners), baked once to a data URL
+  _makeSplatUrl() {
+    const S = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = S;
+    canvas.height = S;
+    const ctx = canvas.getContext('2d');
+    const reds = ['#7c0f09', '#8e130c', '#690c07', '#9c1a10'];
+    for (let i = 0; i < 12; i++) {
+      ctx.fillStyle = reds[(Math.random() * reds.length) | 0];
+      ctx.globalAlpha = 0.55 + Math.random() * 0.4;
+      ctx.beginPath();
+      ctx.ellipse(
+        S / 2 + (Math.random() - 0.5) * 90, S / 2 + (Math.random() - 0.5) * 80,
+        10 + Math.random() * 38, 8 + Math.random() * 28,
+        Math.random() * Math.PI, 0, Math.PI * 2
+      );
+      ctx.fill();
+    }
+    for (let i = 0; i < 9; i++) {
+      const x = S / 2 + (Math.random() - 0.5) * 110;
+      const y0 = S / 2 + Math.random() * 20;
+      const len = 25 + Math.random() * 70;
+      ctx.fillStyle = reds[(Math.random() * reds.length) | 0];
+      ctx.globalAlpha = 0.7;
+      ctx.beginPath();
+      ctx.ellipse(x, y0 + len / 2, 2 + Math.random() * 2.5, len / 2, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    return canvas.toDataURL();
+  }
+
+  // Splash 2-4 fading blood splats onto the screen. Throttled so full-auto
+  // kills at point blank don't strobe.
+  screenBlood() {
+    const now = performance.now();
+    if (now - this._lastSplatAt < 220) return;
+    this._lastSplatAt = now;
+    const n = 2 + ((Math.random() * 3) | 0);
+    for (let i = 0; i < n; i++) {
+      const img = document.createElement('img');
+      img.src = this._splatUrls[(Math.random() * this._splatUrls.length) | 0];
+      const size = 16 + Math.random() * 22;
+      img.style.cssText =
+        `position:absolute;left:${10 + Math.random() * 70}%;top:${5 + Math.random() * 70}%;` +
+        `width:${size}vmin;transform:rotate(${(Math.random() * 360) | 0}deg);` +
+        'opacity:0.9;transition:opacity 1.3s ease;';
+      this.splatLayer.appendChild(img);
+      requestAnimationFrame(() => requestAnimationFrame(() => { img.style.opacity = '0'; }));
+      setTimeout(() => img.remove(), 1600);
+    }
   }
 
   showScreen(name) {
@@ -5500,6 +5663,7 @@ class ThirdPersonCamera {
 
 
 
+
 const TRAMPLE_SPEED = 9;   // min player speed for an instant-kill trample
 const TRAMPLE_RANGE = 3.0;
 
@@ -5781,8 +5945,32 @@ class Game {
     const r = blastCrater(this.scene, at.x, at.z, big ? 2.6 : 1);
     const k = big ? 3.4 : 1; // effect scale
 
-    // Carve nearby house walls into flying rubble
-    this._blastHouseChunks(at, r * 0.6 + 1.6);
+    // Carve nearby house walls into flying rubble — anything standing over
+    // the new bowl loses its footing and comes down with it
+    this._blastHouseChunks(at, Math.max(r * 0.6 + 1.6, r * 0.95));
+
+    // Fences undermined by the blast splinter into flying rails
+    for (let i = colliders.length - 1; i >= 0; i--) {
+      const c = colliders[i];
+      if (c.kind !== 'segment' || !c.breakable) continue;
+      const dF = Math.min(
+        Math.hypot(c.x1 - at.x, c.z1 - at.z),
+        Math.hypot(c.x2 - at.x, c.z2 - at.z),
+        Math.hypot((c.x1 + c.x2) / 2 - at.x, (c.z1 + c.z2) / 2 - at.z)
+      );
+      if (dF > r + 2) continue;
+      removeCollider(c);
+      const rails = c.pieces || (c.fenceGroup ? [...c.fenceGroup.children] : []);
+      for (const piece of rails) {
+        this.scene.attach(piece);
+        const away = piece.position.clone().sub(at);
+        away.y = Math.abs(away.y) * 0.3 + 1.5 + Math.random() * 2.5;
+        away.setLength(5 + Math.random() * 6);
+        this.debris.add(piece, away, new THREE.Vector3(
+          (Math.random() - 0.5) * 8, (Math.random() - 0.5) * 6, (Math.random() - 0.5) * 8
+        ));
+      }
+    }
 
     // The ground just sank here — wake corpses resting near the new crater
     // so bodies, torn-off limbs and blood pools tumble down into the bowl
@@ -5791,6 +5979,30 @@ class Game {
       if (!e.dying || !e.ragdoll) continue;
       const dc = Math.hypot(e.group.position.x - at.x, e.group.position.z - at.z);
       if (dc < r * 2 + 2) e.ragdoll.wake();
+    }
+
+    // Trees caught in the blast burst apart: trunk and boughs separate,
+    // tumble through the air, and come to rest in the grass as debris
+    for (let i = colliders.length - 1; i >= 0; i--) {
+      const c = colliders[i];
+      if (c.kind !== 'circle' || !c.isTree || !c.mesh) continue;
+      const dTree = Math.hypot(c.x - at.x, c.z - at.z);
+      if (dTree > r + 4) continue;
+      removeCollider(c);
+      for (const piece of [...c.mesh.children]) {
+        this.scene.attach(piece);
+        const away = piece.position.clone().sub(at);
+        away.y = Math.abs(away.y) * 0.25 + 2 + Math.random() * 3.5;
+        away.setLength(7 + Math.random() * 8);
+        this.debris.add(piece, away, new THREE.Vector3(
+          (Math.random() - 0.5) * 7, (Math.random() - 0.5) * 5, (Math.random() - 0.5) * 7
+        ));
+      }
+      c.mesh.removeFromParent();
+      this.particles.spawnBurst(
+        new THREE.Vector3(c.x, terrainHeight(c.x, c.z) + 2.5, c.z),
+        { color: 0x5a4128, count: 22, speed: 7, size: 0.28, life: 1.1, gravity: 14, upBias: 5 }
+      );
     }
 
     // Dirt hurled HIGH into the sky: a tall central column + a wide fan
@@ -6019,19 +6231,22 @@ class Game {
     this._cineBottom.classList.add('in');
 
     const P = this.player;
-    if (P.mounted) P.toggleMount(); // horse waits ahead; the man walks to it
+    if (P.mounted) P.toggleMount(); // the man opens on foot
+    P.meshRoot.visible = false;     // no horse anywhere in the frame
     const heading = Math.PI / 5;
     if (P._parked) P._parked.heading = heading;
     const walkDir = new THREE.Vector3(Math.sin(heading), 0, Math.cos(heading));
-    const horse = P.meshRoot.position.clone();
-    P.group.position.set(horse.x - walkDir.x * 11, 0, horse.z - walkDir.z * 11);
+    P.group.position.set(
+      P.meshRoot.position.x - walkDir.x * 11, 0,
+      P.meshRoot.position.z - walkDir.z * 11
+    );
     P.group.position.y = terrainHeight(P.group.position.x, P.group.position.z);
     P.heading = heading;
     P.group.rotation.y = heading;
     P.riderUpper.rotation.y = 0;
     P.velocity.set(0, 0, 0);
 
-    this.intro = { t: 0, walkDir, horse, reloadSfx: false };
+    this.intro = { t: 0, walkDir, reloadSfx: false, fpOn: false };
     this._syncAudio();
   }
 
@@ -6049,10 +6264,8 @@ class Game {
 
     if (t >= 2 && this._cineFade.style.opacity !== '0') this._cineFade.style.opacity = '0';
 
-    // The slow walk toward the waiting horse
-    const toHorse = new THREE.Vector3().subVectors(I.horse, P.group.position);
-    toHorse.y = 0;
-    if (t >= 2 && toHorse.length() > 1.7) {
+    // The slow, steady walk through the wet grass — the whole picture long
+    if (t >= 2) {
       P.group.position.addScaledVector(I.walkDir, 1.35 * dt);
       P.group.position.y = terrainHeight(P.group.position.x, P.group.position.z);
       P._footPhase += dt * 3.6;
@@ -6060,50 +6273,67 @@ class Game {
       P.footLegs[0].rotation.x = swing;
       P.footLegs[1].rotation.x = -swing;
       P.footRoot.position.y = Math.abs(Math.sin(P._footPhase)) * 0.04;
-    } else {
-      P.footLegs[0].rotation.x *= 1 - Math.min(1, 8 * dt);
-      P.footLegs[1].rotation.x *= 1 - Math.min(1, 8 * dt);
     }
 
-    // He seats a fresh magazine — slow, unhurried, inevitable
-    if (t >= 3 && !I.reloadSfx) {
-      I.reloadSfx = true;
-      this.audio.playSfx('reload', { volume: 0.75, rate: 0.5 });
+    // Shot 3 is first person: he racks a fresh mag and looks the gun over
+    if (t >= 6.6 && !I.fpOn) {
+      I.fpOn = true;
+      P.setFirstPerson(true, this.camera);
     }
-    if (t >= 3 && t < 7.2) P.setReloadT(Math.min((t - 3) / 4, 0.999));
+    if (t >= 6.8 && !I.reloadSfx) {
+      I.reloadSfx = true;
+      this.audio.playSfx('reload', { volume: 0.8, rate: 0.85 });
+    }
+    if (t >= 6.8 && t < 9.0) P.setReloadT(Math.min((t - 6.8) / 2.2, 0.999));
     else P.setReloadT(null);
     P._applyReloadPose();
+    if (I.fpOn) {
+      // After seating the mag he tilts the piece over, inspecting it
+      const ins = THREE.MathUtils.clamp((t - 9.0) / 0.5, 0, 1);
+      const settle = THREE.MathUtils.clamp((t - 10.0) / 0.4, 0, 1);
+      const k = ins * (1 - settle);
+      P.fpAnchor.rotation.y = Math.PI + k * 0.5;
+      P.fpAnchor.rotation.z = -k * 0.35;
+      P.fpAnchor.rotation.x = k * 0.15;
+    }
 
-    // Two long, low letterboxed shots
+    // Three letterboxed shots
+    P.group.updateMatrixWorld(true);
     const base = P.group.position.clone();
     const right = new THREE.Vector3(I.walkDir.z, 0, -I.walkDir.x);
-    if (t < 5.6) {
-      // Shot 1 — tracking alongside at chest height, drifting with him
+    if (t < 4.3) {
+      // Shot 1 — boots in the dirt: low tracking close-up on the feet
       const cam = base.clone()
-        .addScaledVector(right, 3.1)
-        .addScaledVector(I.walkDir, -0.6 + t * 0.12);
-      cam.y = terrainHeight(cam.x, cam.z) + 1.15;
+        .addScaledVector(right, 1.5)
+        .addScaledVector(I.walkDir, 1.1);
+      cam.y = terrainHeight(cam.x, cam.z) + 0.45;
       this.camera.position.copy(cam);
-      const look = base.clone().addScaledVector(I.walkDir, 0.8);
-      look.y += 1.3;
+      const look = base.clone().addScaledVector(I.walkDir, 0.2);
+      look.y += 0.35;
       this.camera.lookAt(look);
-    } else {
-      // Shot 2 — low front angle, slowly pulling back as he closes in
-      const pull = 4.4 - (t - 5.6) * 0.25;
+    } else if (t < 6.6) {
+      // Shot 2 — a long, wide shot: one small figure crossing the field
       const cam = base.clone()
-        .addScaledVector(I.walkDir, pull)
-        .addScaledVector(right, -1.2);
-      cam.y = terrainHeight(cam.x, cam.z) + 0.95;
+        .addScaledVector(right, 13)
+        .addScaledVector(I.walkDir, -14);
+      cam.y = terrainHeight(cam.x, cam.z) + 3.2;
       this.camera.position.copy(cam);
       const look = base.clone();
-      look.y += 1.45;
+      look.y += 1.2;
+      this.camera.lookAt(look);
+    } else {
+      // Shot 3 — through his own eyes: gun up, fresh mag, quick once-over
+      P.eyeAnchor.getWorldPosition(this._eyePos);
+      this.camera.position.copy(this._eyePos);
+      const look = this._eyePos.clone().addScaledVector(I.walkDir, 10);
+      look.y -= 1.1;
       this.camera.lookAt(look);
     }
 
     this.input.consumeMouseDelta();
     this.input.consumeWheel();
 
-    if (t >= 9.2) this._endIntro();
+    if (t >= 10.6) this._endIntro();
   }
 
   _endIntro() {
@@ -6111,7 +6341,10 @@ class Game {
     this.intro = null;
     P.setReloadT(null);
     P._applyReloadPose();
-    // Swing into the saddle and take the reins
+    P.fpAnchor.rotation.set(0, Math.PI, 0);
+    // The horse reappears with the world; swing into the saddle
+    P.meshRoot.visible = true;
+    P.setFirstPerson(false, this.camera);
     P.group.position.copy(P.meshRoot.position);
     P.toggleMount();
     this.state = 'playing';
@@ -6119,6 +6352,7 @@ class Game {
     this._cineFade.style.opacity = '0';
     this._cineTop.classList.remove('in');
     this._cineBottom.classList.remove('in');
+    this.camCtrl.viewIndex = 1; // hand control back in third person
     this.camCtrl.yaw = P.heading + Math.PI;
     this.camCtrl.pitch = 0.22;
     this.camCtrl._initialized = false; // snap cleanly in behind the rider
@@ -6266,6 +6500,7 @@ class Game {
             this.particles.blood(chest.clone().addScaledVector(fwd, 0.25), false);
             this.audio.playSfx('squish', { volume: 0.9, rate: 1.15, rateJitter: 0.12 });
             this.camCtrl.addShake(0.09);
+            this.ui.screenBlood();
           }
         } else {
           F.done = true;
@@ -6511,6 +6746,7 @@ class Game {
         at.y += 1.4;
         this.particles.blood(at, killed);
         if (killed) this.waves.onKill();
+        this.ui.screenBlood(); // sword range = blood in your face
       }
       this.audio.playSfx(hitAny ? 'squish' : 'whistle', {
         volume: hitAny ? 0.8 : 0.3, rate: hitAny ? 1.1 : 1.7, rateJitter: 0.1,
@@ -6603,6 +6839,7 @@ class Game {
           this.player.swingSword(); // saber flashes through the arc (horse)
           this.audio.playSfx('squish', { volume: 0.9, rateJitter: 0.1 });
           this.camCtrl.addShake(0.2);
+          this.ui.screenBlood(); // trampling a man is a messy business
           const splat = e.group.position.clone();
           splat.y += 1.2;
           this.particles.blood(splat, true);
@@ -6723,6 +6960,8 @@ class Game {
         const killed = enemy.takeDamage(dmg, impulse);
         this.particles.blood(point, killed || zone === 'head');
         if (killed) this.waves.onKill();
+        // Close-range gore splashes the lens
+        if (point.distanceTo(this.player.position) < 8) this.ui.screenBlood();
       },
       this.camCtrl,
       reloadRequested,
