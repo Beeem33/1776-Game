@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { terrainHeight } from '../world/terrain.js';
 
 // Lightweight burst particle system. Each burst is one THREE.Points object
 // whose vertices fly apart, fall under gravity, and fade out.
@@ -201,7 +202,12 @@ export class Particles {
         arr[j] += vel[j] * dt;
         arr[j + 1] += vel[j + 1] * dt;
         arr[j + 2] += vel[j + 2] * dt;
-        if (arr[j + 1] < 0.05) arr[j + 1] = 0.05; // rest on the ground
+        // Rest on the REAL ground — falling blood/dirt follows crater bowls
+        // down instead of freezing at a flat height and floating mid-air
+        if (b.gravity > 0 && arr[j + 1] < 8) {
+          const floor = terrainHeight(arr[j], arr[j + 2]) + 0.05;
+          if (arr[j + 1] < floor) arr[j + 1] = floor;
+        }
       }
       pos.needsUpdate = true;
       b.points.material.opacity = b.life / b.maxLife;

@@ -113,6 +113,40 @@ export class Ragdoll {
       });
   }
 
+  // A nearby blast just reshaped the ground (fresh crater): wake the corpse
+  // so the body, severed limbs, dropped gun and blood pool all settle down
+  // onto the NEW terrain instead of floating over the hole. Pieces get a
+  // tiny pop so they visibly tumble and bleed down into the bowl.
+  wake() {
+    if (!this.grounded) return; // still flying — it will land on the new ground anyway
+    this.sleeping = false;
+    this.restTime = 0;
+    this.group.traverse((o) => { o.matrixAutoUpdate = true; });
+    this.rotVelX += (Math.random() - 0.5) * 0.8;
+    this.rotVelZ += (Math.random() - 0.5) * 0.8;
+    this._retargetLimbs(0.4);
+
+    for (const S of this.severed) {
+      S.resting = false;
+      S.obj.matrixAutoUpdate = true;
+      S.obj.traverse((o) => { o.matrixAutoUpdate = true; });
+      S.vel.set((Math.random() - 0.5) * 2, 1.2 + Math.random() * 1.6, (Math.random() - 0.5) * 2);
+      S.ang.set((Math.random() - 0.5) * 5, (Math.random() - 0.5) * 3, (Math.random() - 0.5) * 5);
+      S.bloodT = 0.15; // fresh drips as it slides down
+    }
+    if (this.gun && this.gun.resting) {
+      this.gun.resting = false;
+      this.gun.g.matrixAutoUpdate = true;
+      this.gun.g.traverse((o) => { o.matrixAutoUpdate = true; });
+      this.gun.vel.set((Math.random() - 0.5) * 1.2, 0.8, (Math.random() - 0.5) * 1.2);
+      this.gun.ang.set(0, 0, 0);
+    }
+    // The pool drops flush onto the new crater floor
+    if (this.pool) {
+      this.pool.position.y = terrainHeight(this.pool.position.x, this.pool.position.z) + 0.045;
+    }
+  }
+
   _retargetLimbs(energy) {
     for (const L of this.limbStates) {
       L.tx = (Math.random() - 0.5) * (L.hinge ? 1.6 : 2.6) * energy;

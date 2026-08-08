@@ -1,13 +1,11 @@
 import * as THREE from 'three';
 import { createWorld, updateSun, houseChunks } from './world/world.js';
-import { colliders, pointInBox } from './world/colliders.js';
 import { windClock, terrainHeight, blastCrater } from './world/terrain.js';
 import { Weather } from './world/weather.js';
 import { DebrisManager } from './world/debris.js';
 import { Input } from './core/input.js';
 import { ThirdPersonCamera } from './core/camera.js';
 import { Player } from './entities/player.js';
-import { Tank } from './entities/tank.js';
 import { AudioManager } from './systems/audio.js';
 import { Weapon } from './systems/weapon.js';
 import { WaveManager } from './systems/waves.js';
@@ -54,9 +52,7 @@ class Game {
     this._rWasDown = false;
     this._vWasDown = false;
     this._eyePos = new THREE.Vector3();
-    this.shells = []; // mortar/cannon/tank shells in flight
-    this.vehicle = 'horse';
-    this.tankCd = 0;
+    this.shells = []; // mortar/cannon shells in flight
     this._eWasDown = false;
 
     this._bindEvents();
@@ -118,18 +114,6 @@ class Game {
         } catch (err) { /* stay in fallback */ }
       }
     });
-    // Lobby vehicle picker: choosing doesn't start the game (stopPropagation)
-    for (const [id, mode] of [['pick-horse', 'horse'], ['pick-tank', 'tank']]) {
-      const btn = document.getElementById(id);
-      if (!btn) continue;
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this._applyVehicleChoice(mode);
-        document.getElementById('pick-horse').classList.toggle('selected', mode === 'horse');
-        document.getElementById('pick-tank').classList.toggle('selected', mode === 'tank');
-      });
-    }
-
     this.ui.overlayStart.addEventListener('click', requestPlay);
     this.ui.overlayPause.addEventListener('click', requestPlay);
     this.ui.overlayDeath.addEventListener('click', () => {
@@ -186,64 +170,6 @@ class Game {
     this._syncAudio();
   }
 
-  // Swap between the white charger and the little tank (lobby only)
-  _applyVehicleChoice(mode) {
-    if (mode === this.vehicle) return;
-    this.player.dispose();
-    this.player = mode === 'tank' ? new Tank(this.scene) : new Player(this.scene);
-    this.vehicle = mode;
-    this.waves.setTankMode(mode === 'tank');
-    this.weapon.reset();
-    this.tankCd = 0;
-    // Muzzle-flash sprites live on the old gun — re-home them next update
-    if (this.weapon.flashGroup) {
-      this.weapon.flashGroup.removeFromParent();
-      this.weapon._flashAttached = false;
-    }
-  }
-
-  // Tank cannon: one shell every 3 seconds, straight at the crosshair
-  _fireTankShell() {
-    const from = new THREE.Vector3();
-    this.player.muzzle.getWorldPosition(from);
-    const dir = new THREE.Vector3();
-    this.camera.getWorldDirection(dir);
-
-    const mesh = new THREE.Mesh(
-      new THREE.SphereGeometry(0.16, 8, 8),
-      new THREE.MeshStandardMaterial({ color: 0x1d2126, roughness: 0.5, metalness: 0.6 })
-    );
-    mesh.castShadow = true;
-    mesh.position.copy(from);
-    this.scene.add(mesh);
-    this.shells.push({
-      mesh,
-      vel: dir.multiplyScalar(38),
-      g: 7, // flat, fast trajectory
-      smokeT: 0,
-      whistled: true, // no incoming-whistle for your own shells
-      big: false,
-      friendly: true,
-    });
-
-    // A serious muzzle blast: triple fire, sparks, a rolling smoke cloud,
-    // a hot flash of light, and a lingering smoke line down the barrel
-    for (let i = 0; i < 3; i++) {
-      this.particles.flame(from.clone());
-      this.particles.spark(from.clone());
-    }
-    this.particles.spawnBurst(from.clone(), {
-      color: 0x8f938c, count: 22, speed: 3, size: 0.65, life: 2.2, gravity: -0.9, upBias: 1.6,
-    });
-    this.particles.trailSmoke(from, from.clone().addScaledVector(dir.clone().normalize(), 14));
-    const flash = new THREE.PointLight(0xffa040, 55, 22);
-    flash.position.copy(from);
-    this.scene.add(flash);
-    setTimeout(() => this.scene.remove(flash), 100);
-
-    this.audio.playSfx('boom', { volume: 0.7, rate: 1.15, rateJitter: 0.05 });
-    this.camCtrl.addShake(0.3);
-  }
 
   // Knock house wall chunks loose around a blast point — a corner shot
   // takes the corner, not the building
@@ -310,36 +236,6 @@ class Game {
       s.vel.y -= (s.g ?? 26) * dt;
       s.mesh.position.addScaledVector(s.vel, dt);
 
-      // Tank shells burst on contact with a redcoat OR a house wall
-      if (s.friendly) {
-        let hitSomething = s.mesh.position.length() > 400;
-        for (const e of this.waves.enemies) {
-          if (e.dead || e.dying) continue;
-          const d = s.mesh.position.distanceTo(e.group.position);
-          if (d < 1.6) { hitSomething = true; break; }
-        }
-        if (!hitSomething) {
-          const sy = s.mesh.position.y - terrainHeight(s.mesh.position.x, s.mesh.position.z);
-          if (sy < 5.5) {
-            for (const c of colliders) {
-              if (c.kind === 'box' && c.isHouse && pointInBox(c, s.mesh.position.x, s.mesh.position.z)) {
-                hitSomething = true;
-                break;
-              }
-            }
-          }
-        }
-        if (hitSomething) {
-          const at = s.mesh.position.clone();
-          this.scene.remove(s.mesh);
-          s.mesh.geometry.dispose();
-          s.mesh.material.dispose();
-          this.shells.splice(i, 1);
-          this._explodeShell(at, false, true);
-          continue;
-        }
-      }
-
       // Sputtering fuse smoke
       s.smokeT -= dt;
       if (s.smokeT <= 0) {
@@ -368,18 +264,27 @@ class Game {
         s.mesh.geometry.dispose();
         s.mesh.material.dispose();
         this.shells.splice(i, 1);
-        this._explodeShell(at, s.big, s.friendly);
+        this._explodeShell(at, s.big);
       }
     }
   }
 
-  _explodeShell(at, big = false, friendly = false) {
+  _explodeShell(at, big = false) {
     // Dig a real crater into the terrain (scorch, rim clods, flattened grass)
-    const r = blastCrater(this.scene, at.x, at.z, big ? 2.2 : friendly ? 1.5 : 1);
-    const k = big ? 2.6 : friendly ? 1.6 : 1; // effect scale
+    const r = blastCrater(this.scene, at.x, at.z, big ? 2.2 : 1);
+    const k = big ? 2.6 : 1; // effect scale
 
     // Carve nearby house walls into flying rubble
     this._blastHouseChunks(at, r * 0.6 + 1.6);
+
+    // The ground just sank here — wake corpses resting near the new crater
+    // so bodies, torn-off limbs and blood pools tumble down into the bowl
+    // instead of floating over it (craterDip reaches out to 2x the radius)
+    for (const e of this.waves.enemies) {
+      if (!e.dying || !e.ragdoll) continue;
+      const dc = Math.hypot(e.group.position.x - at.x, e.group.position.z - at.z);
+      if (dc < r * 2 + 2) e.ragdoll.wake();
+    }
 
     // Dirt hurled HIGH into the sky: a tall central column + a wide fan
     const plume = at.clone();
@@ -397,8 +302,8 @@ class Game {
       life: 2.6, gravity: -0.8, upBias: 2,
     });
 
-    // Big shells (and your tank's) throw a fireball + a hot flash of light
-    if (big || friendly) {
+    // Big shells throw a fireball + a hot flash of light
+    if (big) {
       this.particles.spawnBurst(plume, {
         color: 0xff7a20, count: big ? 70 : 34, speed: big ? 12 : 8,
         size: big ? 0.85 : 0.55, life: big ? 0.6 : 0.45, gravity: -3, upBias: big ? 7 : 4,
@@ -426,27 +331,24 @@ class Game {
     });
     this.camCtrl.addShake(Math.min(big ? 0.85 : 0.45, (big ? 18 : 8) / Math.max(dPlayer, 1)));
 
-    // Blast damage to the rider (your own tank shells spare you)...
+    // Blast damage to the rider...
     const dmgRadius = big ? 11.5 : 7;
-    if (!friendly && dPlayer < dmgRadius) {
+    if (dPlayer < dmgRadius) {
       this.player.takeDamage(Math.round((big ? 40 : 30) * (1 - dPlayer / dmgRadius)) + 6);
       this.ui.flashDamage();
       this.audio.playSfx('hurt', { volume: 0.7 });
     }
 
     // ...and to any redcoat standing too close (war is messy)
-    const killRadius = friendly ? r + 2.5 : r + 1.5;
+    const killRadius = r + 1.5;
     for (const e of this.waves.enemies) {
       if (e.dead || e.dying) continue;
       const dx = e.group.position.x - at.x;
       const dz = e.group.position.z - at.z;
       const dEnemy = Math.hypot(dx, dz);
       if (dEnemy < killRadius) {
-        // Real blast physics: the closer they stand, the harder they fly
-        const power = 1 - dEnemy / killRadius;
-        const impulse = new THREE.Vector3(dx, 0, dz)
-          .setLength((friendly ? 10 + 16 * power : 10));
-        impulse.y = friendly ? 8 + 8 * power : 7;
+        const impulse = new THREE.Vector3(dx, 0, dz).setLength(10);
+        impulse.y = 7;
         e.kill(impulse, true); // explosions can tear limbs off
         this.waves.onKill();
         this.particles.blood(e.group.position.clone().setY(e.group.position.y + 1), true);
@@ -514,9 +416,9 @@ class Game {
       return;
     }
 
-    // --- E: dismount / remount (horse only) ---
+    // --- E: dismount / remount ---
     const eDown = this.input.isDown('KeyE');
-    if (eDown && !this._eWasDown && this.vehicle === 'horse') {
+    if (eDown && !this._eWasDown) {
       const result = this.player.toggleMount();
       if (result === 'dismounted') this.ui.showBanner('ON FOOT — E NEAR HORSE TO MOUNT', 1.6);
       else if (result === 'mounted') this.ui.showBanner('MOUNTED', 0.8);
@@ -524,14 +426,14 @@ class Game {
     }
     this._eWasDown = eDown;
 
-    // --- camera height follows the ride (saddle / boots / tank hatch) ---
-    this.camCtrl.bodyLift = this.vehicle === 'tank' ? -0.7 : this.player.mounted ? 0 : -1.0;
+    // --- camera height follows the ride (saddle / boots) ---
+    this.camCtrl.bodyLift = this.player.mounted ? 0 : -1.0;
 
     // --- camera view cycling (V) ---
     const vDown = this.input.isDown('KeyV');
     if (vDown && !this._vWasDown) {
       const view = this.camCtrl.cycleView();
-      this.player.setFirstPerson(view.fp);
+      this.player.setFirstPerson(view.fp, this.camera);
       this.ui.showBanner(view.name, 0.9);
     }
     this._vWasDown = vDown;
@@ -541,7 +443,7 @@ class Game {
     // scrolling back out exits it
     const wheelView = this.camCtrl.handleWheel(this.input.consumeWheel());
     if (wheelView) {
-      this.player.setFirstPerson(wheelView.fp);
+      this.player.setFirstPerson(wheelView.fp, this.camera);
       this.ui.showBanner(wheelView.name, 0.9);
     }
     this.player.update(dt, this.input, this.camCtrl);
@@ -568,11 +470,9 @@ class Game {
     const events = [];
     this.waves.update(dt, this.player.position, events);
 
-    // Trample: fast horse (or any rolling tank) + contact = instant kill
+    // Trample: fast horse + contact = instant kill
     const playerSpeed = this.player.velocity.length();
-    const trampleMin = this.vehicle === 'tank' ? 5 : TRAMPLE_SPEED;
-    const canTrample = this.vehicle === 'tank' || this.player.mounted;
-    if (canTrample && playerSpeed > trampleMin) {
+    if (this.player.mounted && playerSpeed > TRAMPLE_SPEED) {
       for (const e of this.waves.enemies) {
         if (e.dead || e.dying) continue;
         const dx = e.group.position.x - this.player.position.x;
@@ -680,9 +580,7 @@ class Game {
         this._launchShell(ev);
         continue;
       }
-      // Tank runs draw heavier fire per hit
-      const dmg = this.vehicle === 'tank' ? Math.round(ev.damage * 1.25) : ev.damage;
-      this.player.takeDamage(dmg);
+      this.player.takeDamage(ev.damage);
       this.ui.flashDamage();
       this.audio.playSfx('hurt', { volume: 0.6, rateJitter: 0.1 });
       this.camCtrl.addShake(0.18);
@@ -699,29 +597,20 @@ class Game {
     // steers the camera and the center dot is where bullets go.
     const aimNdc = { x: 0, y: 0 };
 
-    if (this.vehicle === 'tank') {
-      // Tank cannon: 3-second cooldown, shell explodes among the redcoats
-      this.tankCd = Math.max(0, this.tankCd - dt);
-      if (this.input.fireHeld && this.tankCd <= 0) {
-        this.tankCd = 3;
-        this._fireTankShell();
-      }
-    } else {
-      this.weapon.update(
-        dt,
-        this.input.fireHeld,
-        this.player,
-        this.waves.enemies,
-        (enemy, dmg, zone, point, impulse) => {
-          const killed = enemy.takeDamage(dmg, impulse);
-          this.particles.blood(point, killed || zone === 'head');
-          if (killed) this.waves.onKill();
-        },
-        this.camCtrl,
-        reloadRequested,
-        aimNdc
-      );
-    }
+    this.weapon.update(
+      dt,
+      this.input.fireHeld,
+      this.player,
+      this.waves.enemies,
+      (enemy, dmg, zone, point, impulse) => {
+        const killed = enemy.takeDamage(dmg, impulse);
+        this.particles.blood(point, killed || zone === 'head');
+        if (killed) this.waves.onKill();
+      },
+      this.camCtrl,
+      reloadRequested,
+      aimNdc
+    );
 
     // --- death check ---
     if (this.player.hp <= 0) {
@@ -736,11 +625,11 @@ class Game {
       kills: this.waves.kills,
       hp: this.player.hp,
       maxHp: this.player.maxHp,
-      heat: this.vehicle === 'tank' ? this.tankCd / 3 : this.weapon.heat,
-      overheated: this.vehicle === 'tank' ? false : this.weapon.overheated,
-      ammo: this.vehicle === 'tank' ? (this.tankCd <= 0 ? 1 : 0) : this.weapon.ammo,
-      magSize: this.vehicle === 'tank' ? 1 : this.weapon.magSize,
-      reloading: this.vehicle === 'tank' ? this.tankCd > 0 : this.weapon.reloading,
+      heat: this.weapon.heat,
+      overheated: this.weapon.overheated,
+      ammo: this.weapon.ammo,
+      magSize: this.weapon.magSize,
+      reloading: this.weapon.reloading,
       intermissionTime: this.waves.state === 'intermission' ? this.waves.timer : null,
     });
 

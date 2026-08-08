@@ -20,7 +20,6 @@ $moduleOrder = @(
   'src/systems/audio.js',
   'src/entities/ragdoll.js',
   'src/entities/player.js',
-  'src/entities/tank.js',
   'src/entities/enemy.js',
   'src/systems/weapon.js',
   'src/systems/waves.js',

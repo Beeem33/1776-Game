@@ -26,28 +26,16 @@ export class WaveManager {
     this.timer = 2.5;
   }
 
-  setTankMode(on) {
-    this.tankMode = !!on;
-  }
-
   _beginWave() {
     this.wave += 1;
     this.state = 'active';
 
     // Wave 1 = 10 redcoats, +5 every wave after (capped for performance).
-    // Artillery joins from wave 2 and grows fast. Tank mode piles on more
-    // of everything — a tank deserves a real bombardment.
-    const tank = this.tankMode;
-    let total = Math.min(10 + (this.wave - 1) * 5, 50);
-    let cavalry = Math.min(Math.floor(this.wave / 2) * 2, Math.floor(total / 4));
-    let mortars = this.wave >= 2 ? Math.min(2 + Math.floor(this.wave / 2), 6) : 0;
-    let cannons = Math.min(2 + Math.floor(this.wave / 2), 8); // guns from wave 1, heavy battery fast
-    if (tank) {
-      total = Math.min(Math.round(total * 1.4), 60);
-      cavalry = Math.min(Math.round(cavalry * 1.6) + 1, Math.floor(total / 3));
-      mortars = Math.min(mortars + 2, 8);
-      cannons = Math.min(cannons + 2, 10);
-    }
+    // Artillery joins early and grows fast.
+    const total = Math.min(10 + (this.wave - 1) * 5, 50);
+    const cavalry = Math.min(Math.floor(this.wave / 2) * 2, Math.floor(total / 4));
+    const mortars = this.wave >= 2 ? Math.min(2 + Math.floor(this.wave / 2), 6) : 0;
+    const cannons = Math.min(2 + Math.floor(this.wave / 2), 8); // guns from wave 1, heavy battery fast
     const infantry = Math.max(0, total - cavalry - mortars - cannons);
 
     const types = [];

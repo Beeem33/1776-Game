@@ -102,6 +102,7 @@ export class Player {
     this._buildHorse();
     this._buildRider();
     this._buildUzi();
+    this._buildFpRig();
     this._buildFootRig();
     this._buildSword();
 
@@ -111,6 +112,7 @@ export class Player {
   dispose() {
     this.scene.remove(this.group);
     if (this._parked) this.scene.remove(this.meshRoot);
+    if (this.fpAnchor && this.fpAnchor.parent) this.fpAnchor.parent.remove(this.fpAnchor);
   }
 
   // ---------------- model ----------------
@@ -414,16 +416,19 @@ export class Player {
     sash.rotation.z = 0.6;
     this.riderUpper.add(sash);
 
-    // Left arm forward holding the reins (reaches for the mag during reloads)
-    this.armL = capsule(0.085, 0.36, coatBlue, {}, 10);
-    this.armL.position.set(-0.38, 0.62, 0.16);
-    this._armLBase = { x: -1.0, z: -0.3 };
-    this.armL.rotation.x = this._armLBase.x;
-    this.armL.rotation.z = this._armLBase.z;
+    // Left arm reaches across the chest to support the uzi's mag well —
+    // a proper two-handed grip (it lets go to work the mag during reloads)
+    this.armL = capsule(0.085, 0.52, coatBlue, {}, 10);
+    this.armL.position.set(0.02, 0.8, 0.28);
+    this.armL.quaternion.setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0),
+      new THREE.Vector3(0.64, -0.22, 0.48).normalize()
+    );
+    this._armLBase = { x: this.armL.rotation.x, z: this.armL.rotation.z };
     this.riderUpper.add(this.armL);
 
-    const handL = sphere(0.075, skin, {}, 8);
-    handL.position.set(-0.44, 0.62, 0.42);
+    const handL = sphere(0.08, skin, {}, 8);
+    handL.position.set(0.34, 0.64, 0.5);
     this.riderUpper.add(handL);
 
     // Right arm — parented into a group so it follows the gun during reload
@@ -531,6 +536,56 @@ export class Player {
     this.muzzle = new THREE.Object3D();
     this.muzzle.position.set(0, 0.02, 0.5);
     this.uziGroup.add(this.muzzle);
+  }
+
+  // Camera-attached first-person rig (Call-of-Duty style): in first person
+  // the REAL uzi group is re-parented onto this anchor, so recoil kick and
+  // the whole reload animation carry over 1:1. The gun sits low-right in
+  // frame with both sleeved arms reaching in from the bottom of the screen.
+  _buildFpRig() {
+    const coatBlue = 0x24408f;
+    const skin = 0xd9a06b;
+    const buff = 0xd8cfb4;
+
+    this.fpAnchor = new THREE.Group();
+    this.fpAnchor.rotation.y = Math.PI; // rig +Z = camera forward
+    this.fpAnchor.position.set(0.32, -0.36, -0.38);
+    this.fpAnchor.scale.setScalar(1.3);
+    this.fpAnchor.visible = false;
+
+    // Right forearm rises from the bottom-right to the pistol grip
+    const foreR = capsule(0.09, 0.42, coatBlue, {}, 10);
+    foreR.position.set(0.1, -0.36, 0.2);
+    foreR.quaternion.setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0), new THREE.Vector3(-0.15, 0.5, 0.6).normalize()
+    );
+    this.fpAnchor.add(foreR);
+
+    const cuffR = cyl(0.1, 0.1, 0.12, buff, {}, 10);
+    cuffR.position.set(0.15, -0.54, 0.02);
+    cuffR.quaternion.copy(foreR.quaternion);
+    this.fpAnchor.add(cuffR);
+
+    const handR = sphere(0.085, skin, {}, 10);
+    handR.position.set(0.03, -0.14, 0.47);
+    this.fpAnchor.add(handR);
+
+    // Left forearm crosses in from the lower left to cradle the mag well
+    const foreL = capsule(0.09, 0.46, coatBlue, {}, 10);
+    foreL.position.set(-0.19, -0.46, 0.24);
+    foreL.quaternion.setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0), new THREE.Vector3(0.34, 0.34, 0.5).normalize()
+    );
+    this.fpAnchor.add(foreL);
+
+    const cuffL = cyl(0.1, 0.1, 0.12, buff, {}, 10);
+    cuffL.position.set(-0.33, -0.6, 0.04);
+    cuffL.quaternion.copy(foreL.quaternion);
+    this.fpAnchor.add(cuffL);
+
+    const handL = sphere(0.085, skin, {}, 10);
+    handL.position.set(-0.03, -0.3, 0.47);
+    this.fpAnchor.add(handL);
   }
 
   // Standing rig used while dismounted: walking legs under the same
@@ -680,11 +735,21 @@ export class Player {
     }
   }
 
-  // First person: hide the rider's upper body so it doesn't block the view
+  // First person: hide the rider's body and swap the REAL uzi onto the
+  // camera-attached rig — gun and arms visible low-right like CoD. The
+  // muzzle rides with the uzi group, so tracers/flashes come from the gun.
   // (the horse stays visible for the riding feel; matrices still update, so
-  // the muzzle and eye anchors keep working).
-  setFirstPerson(fp) {
+  // the eye anchor keeps working).
+  setFirstPerson(fp, camera = null) {
     this.riderUpper.visible = !fp;
+    if (fp) {
+      if (camera && this.fpAnchor.parent !== camera) camera.add(this.fpAnchor);
+      this.fpAnchor.add(this.uziGroup); // keeps local pose — reload anim intact
+      this.fpAnchor.visible = true;
+    } else {
+      this.armR.add(this.uziGroup);
+      this.fpAnchor.visible = false;
+    }
   }
 
   // Keyframe interpolator: stops = [[t, value], ...] with cosine easing
