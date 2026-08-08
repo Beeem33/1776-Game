@@ -335,9 +335,9 @@ class Game {
     });
     this.camCtrl.addShake(Math.min(big ? 0.85 : 0.45, (big ? 18 : 8) / Math.max(dPlayer, 1)));
 
-    // Blast damage to the rider...
+    // Blast damage to the rider (spared mid-finisher — cinematic luck)...
     const dmgRadius = big ? 11.5 : 7;
-    if (dPlayer < dmgRadius) {
+    if (dPlayer < dmgRadius && !this.finisher) {
       this.player.takeDamage(Math.round((big ? 40 : 30) * (1 - dPlayer / dmgRadius)) + 6);
       this.ui.flashDamage();
       this.audio.playSfx('hurt', { volume: 0.7 });
@@ -360,7 +360,182 @@ class Game {
     }
   }
 
+  // ---------------- the knife finisher ----------------
+  // U near a redcoat on foot: the camera pulls back and slowly orbits, the
+  // patriot wrenches him into a headlock (musket clatters away, he thrashes
+  // to break free), draws a boot knife, and drives it into the chest 3-5
+  // times — blood squirting on every thrust — until the man goes limp.
+
+  _startFinisher(enemy) {
+    enemy.inFinisher = true;
+
+    // Face the man you're about to grab
+    const dx = enemy.group.position.x - this.player.position.x;
+    const dz = enemy.group.position.z - this.player.position.z;
+    this.player.heading = Math.atan2(dx, dz);
+    this.player.group.rotation.y = this.player.heading;
+    this.player.riderUpper.rotation.y = 0;
+
+    // His musket drops from his hands
+    let gun = null;
+    if (enemy.musketParts && enemy.musketParts.length) {
+      gun = new THREE.Group();
+      this.scene.add(gun);
+      enemy.musketParts[0].getWorldPosition(gun.position);
+      for (const part of enemy.musketParts) gun.attach(part);
+      enemy.musketParts = [];
+    }
+
+    this.finisher = {
+      t: 0,
+      enemy,
+      stabs: 3 + Math.floor(Math.random() * 3), // 3-5 thrusts
+      stabsDone: 0,
+      knifeOut: false,
+      done: false,
+      endAt: 0,
+      gun,
+      gunVel: new THREE.Vector3((Math.random() - 0.5) * 1.5, 2.2, (Math.random() - 0.5) * 1.5),
+      gunRest: false,
+      enemyStart: enemy.group.position.clone(),
+      camSave: { view: this.camCtrl.viewIndex, zoom: this.camCtrl._zoomTarget },
+    };
+
+    // Cinematic frame: drop out of first person, pull back wide
+    if (this.camCtrl.view.fp) this.player.setFirstPerson(false, this.camera);
+    this.camCtrl.viewIndex = 0;
+    this.camCtrl._zoomTarget = 1.9;
+  }
+
+  _updateFinisher(dt) {
+    const F = this.finisher;
+    const P = this.player;
+    const E = F.enemy;
+    F.t += dt;
+    const t = F.t;
+    const kf = P._kf.bind(P);
+
+    // The dropped musket clatters to the grass
+    if (F.gun && !F.gunRest) {
+      F.gunVel.y -= 24 * dt;
+      F.gun.position.addScaledVector(F.gunVel, dt);
+      F.gun.rotation.x += 3 * dt;
+      F.gun.rotation.y += 1.5 * dt;
+      const gy = terrainHeight(F.gun.position.x, F.gun.position.z) + 0.09;
+      if (F.gun.position.y <= gy && F.gunVel.y <= 0) {
+        F.gun.position.y = gy;
+        F.gun.rotation.x = 0;
+        F.gun.rotation.z = Math.PI / 2 + (Math.random() - 0.5) * 0.3;
+        F.gunRest = true;
+      }
+    }
+
+    // If a shell kills him mid-scene, cut straight to the end
+    if (E.dying && !F.done) { F.done = true; F.endAt = t; }
+
+    if (!E.dying) {
+      // Wrench him into the headlock slot: tight in front, facing away
+      const fwd = new THREE.Vector3(Math.sin(P.heading), 0, Math.cos(P.heading));
+      const slot = P.position.clone().addScaledVector(fwd, 0.8);
+      slot.y = terrainHeight(slot.x, slot.z);
+      const grab = Math.min(1, t / 0.45);
+      E.group.position.lerpVectors(F.enemyStart, slot, grab * grab * (3 - 2 * grab));
+      E.group.rotation.y = P.heading;
+      E.group.rotation.x = -0.12 * grab; // hauled back on his heels
+
+      // He struggles — arms clawing, head twisting — fading as the knife works
+      const struggle = Math.max(0, 1 - Math.max(0, t - 1.9) / (F.stabs * 0.5));
+      const wig = Math.sin(t * 13);
+      if (E.limbs.armL) {
+        E.limbs.armL.rotation.x = grab * (-0.9 + wig * 0.55 * struggle);
+        E.limbs.armL.rotation.z = grab * (0.5 + Math.cos(t * 11) * 0.3 * struggle);
+      }
+      if (E.limbs.armR) {
+        E.limbs.armR.rotation.x = grab * (-0.7 - wig * 0.5 * struggle);
+        E.limbs.armR.rotation.z = grab * (-0.4 - Math.cos(t * 9) * 0.3 * struggle);
+      }
+      if (E.limbs.head) E.limbs.head.rotation.z = wig * 0.12 * struggle;
+
+      // Patriot: left arm clamps around his neck
+      P.armL.rotation.x = P._armLBase.x - 0.9 * grab;
+      P.armL.rotation.z = P._armLBase.z + 0.6 * grab;
+
+      // The knife comes out
+      if (t >= 1.2 && !F.knifeOut) {
+        F.knifeOut = true;
+        P.uziGroup.visible = false;
+        P.knife.visible = true;
+        this.audio.playSfx('reload', { volume: 0.4, rate: 2.2 }); // steel whisper
+      }
+
+      // Right arm: draw + raise, then rhythmic stabs into the chest
+      if (t < 1.2) {
+        P.armR.rotation.x = 0;
+      } else if (t < 1.9) {
+        P.armR.rotation.x = -((t - 1.2) / 0.7) * 2.1;
+      } else if (!F.done) {
+        const cycle = (t - 1.9) / 0.5;
+        const i = Math.floor(cycle);
+        const ph = cycle - i;
+        if (i < F.stabs) {
+          P.armR.rotation.x = kf(ph, [[0, -2.1], [0.45, -0.45], [0.6, -0.55], [1, -2.1]]);
+          if (ph >= 0.45 && F.stabsDone <= i) {
+            F.stabsDone = i + 1;
+            // Blood squirts from the chest with every thrust
+            const chest = E.group.position.clone();
+            chest.y += 1.45;
+            chest.addScaledVector(fwd, 0.3);
+            this.particles.blood(chest, true);
+            this.particles.blood(chest.clone().addScaledVector(fwd, 0.25), false);
+            this.audio.playSfx('squish', { volume: 0.9, rate: 1.15, rateJitter: 0.12 });
+            this.camCtrl.addShake(0.09);
+          }
+        } else {
+          F.done = true;
+          F.endAt = t + 0.35; // a beat of stillness, then he drops
+        }
+      }
+    }
+
+    if (F.done && t >= F.endAt) this._endFinisher();
+  }
+
+  _endFinisher() {
+    const F = this.finisher;
+    const P = this.player;
+    const E = F.enemy;
+    this.finisher = null;
+    E.inFinisher = false;
+    E.group.rotation.x = 0;
+
+    if (!E.dying) {
+      // He goes limp and slides off the blade
+      const fwd = new THREE.Vector3(Math.sin(P.heading), 0, Math.cos(P.heading));
+      const imp = fwd.multiplyScalar(2.5);
+      imp.y = 1.2;
+      E.kill(imp);
+      this.waves.onKill();
+    }
+
+    // Knife away, uzi back up, controls return
+    P.knife.visible = false;
+    P.uziGroup.visible = true;
+    P.armR.rotation.x = 0;
+    P.armL.rotation.x = P._armLBase.x;
+    P.armL.rotation.z = P._armLBase.z;
+
+    // Camera returns to the pre-kill framing
+    this.camCtrl.viewIndex = F.camSave.view;
+    this.camCtrl._zoomTarget = F.camSave.zoom;
+    this.player.setFirstPerson(this.camCtrl.view.fp, this.camera);
+  }
+
   _resetRun() {
+    if (this.finisher) {
+      this.finisher = null;
+      this.player.knife.visible = false;
+      this.player.uziGroup.visible = true;
+    }
     for (const s of this.shells) {
       this.scene.remove(s.mesh);
       s.mesh.geometry.dispose();
@@ -420,6 +595,39 @@ class Game {
       return;
     }
 
+    // --- cinematic finisher: the cutscene owns the player and his victim,
+    // but the battle keeps raging around them ---
+    if (this.finisher) {
+      this._updateFinisher(dt);
+      const cine = [];
+      this.waves.update(dt, this.player.position, cine);
+      for (const ev of cine) {
+        if (ev.type === 'mortarFire' || ev.type === 'cannonFire') this._launchShell(ev);
+        // musket balls and melee miss the tangle of bodies — cinematic luck
+      }
+      this._updateShells(dt);
+      this.player.eyeAnchor.getWorldPosition(this._eyePos);
+      this.camCtrl.yaw += dt * 0.25; // slow orbiting camera, movie-style
+      this.camCtrl.update(dt, this.player.position, { x: 0, y: 0 }, this._eyePos);
+      this.input.consumeMouseDelta();
+      this.input.consumeWheel();
+      this.ui.update(dt, {
+        wave: this.waves.wave,
+        aliveCount: this.waves.aliveCount,
+        kills: this.waves.kills,
+        hp: this.player.hp,
+        maxHp: this.player.maxHp,
+        heat: this.weapon.heat,
+        overheated: this.weapon.overheated,
+        ammo: this.weapon.ammo,
+        magSize: this.weapon.magSize,
+        reloading: this.weapon.reloading,
+        intermissionTime: this.waves.state === 'intermission' ? this.waves.timer : null,
+      });
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
+
     // --- E: dismount / remount ---
     const eDown = this.input.isDown('KeyE');
     if (eDown && !this._eWasDown) {
@@ -460,6 +668,27 @@ class Game {
       this.camCtrl.addShake(hitAny ? 0.12 : 0.05);
     }
     this._fWasDown = fDown;
+
+    // --- U: cinematic knife finisher (on foot, within grabbing range) ---
+    const uDown = this.input.isDown('KeyU');
+    if (uDown && !this._uWasDown) {
+      if (this.player.mounted) {
+        this.ui.showBanner('DISMOUNT (E) TO FINISH A MAN BY HAND', 1.4);
+      } else {
+        let best = null;
+        let bestD = 3.0;
+        for (const e of this.waves.enemies) {
+          if (e.dead || e.dying || e.type === 'cavalry') continue;
+          const d = Math.hypot(
+            e.group.position.x - this.player.position.x,
+            e.group.position.z - this.player.position.z
+          );
+          if (d < bestD) { best = e; bestD = d; }
+        }
+        if (best) this._startFinisher(best);
+      }
+    }
+    this._uWasDown = uDown;
 
     // --- camera height follows the ride (saddle / boots) ---
     this.camCtrl.bodyLift = this.player.mounted ? 0 : -1.0;

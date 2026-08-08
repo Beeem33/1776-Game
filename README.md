@@ -20,6 +20,7 @@ battlefield. Built with vanilla Three.js. Desktop browser + mouse required.
 | **V** | camera: hip / far / first person |
 | **Scroll wheel** | zoom — all the way in enters first person |
 | **F** | saber strike |
+| **U** | knife finisher (on foot, up close) |
 | **G** | fullscreen |
 | **Ride into redcoats** | trample for an instant kill |
 | **Esc** | pause / release mouse |

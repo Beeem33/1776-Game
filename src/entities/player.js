@@ -102,6 +102,7 @@ export class Player {
     this._buildHorse();
     this._buildRider();
     this._buildUzi();
+    this._buildKnife();
     this._buildFpRig();
     this._buildFootRig();
     this._buildSword();
@@ -538,6 +539,28 @@ export class Player {
     this.uziGroup.add(this.muzzle);
   }
 
+  // Boot knife for the U-key finisher — icepick grip in the right fist,
+  // hidden until the deed. Rides the armR group so stab swings carry it.
+  _buildKnife() {
+    this.knife = new THREE.Group();
+
+    const blade = box(0.025, 0.34, 0.06, 0xd9dee6, { roughness: 0.2, metalness: 0.9 });
+    blade.position.y = 0.26;
+    this.knife.add(blade);
+
+    const guard = box(0.1, 0.03, 0.08, 0xc9a44a, { roughness: 0.4, metalness: 0.7 });
+    guard.position.y = 0.08;
+    this.knife.add(guard);
+
+    const grip = cyl(0.03, 0.035, 0.15, 0x2e2418, {}, 8);
+    this.knife.add(grip);
+
+    this.knife.position.set(0.02, -0.02, 0.42); // in the right fist
+    this.knife.rotation.x = Math.PI; // blade downward — icepick grip
+    this.knife.visible = false;
+    this.armR.add(this.knife);
+  }
+
   // Camera-attached first-person rig (Call-of-Duty style): in first person
   // the REAL uzi group is re-parented onto this anchor, so recoil kick and
   // the whole reload animation carry over 1:1. The gun sits low-right in
@@ -653,6 +676,10 @@ export class Player {
     if (t >= 1) {
       this._swingT = null;
       this.swordPivot.visible = false;
+      // Arm and torso snap back to their rest pose
+      this.armL.rotation.x = this._armLBase.x;
+      this.armL.rotation.z = this._armLBase.z;
+      this.riderUpper.rotation.z = 0;
       return;
     }
     const kf = this._kf.bind(this);
@@ -660,6 +687,12 @@ export class Player {
     this.swordPivot.rotation.x = kf(t, [[0, -2.5], [0.45, 0.7], [1, 1.1]]);
     this.swordPivot.rotation.z = kf(t, [[0, 0.9], [0.45, -0.5], [1, -0.8]]);
     this.swordPivot.rotation.y = kf(t, [[0, 0.4], [1, -0.3]]);
+
+    // The whole left arm swings the cut and the torso leans into it —
+    // the strike reads on the character, not just on the floating blade
+    this.armL.rotation.x = this._armLBase.x + kf(t, [[0, 0], [0.15, -1.7], [0.5, 0.8], [1, 0.1]]);
+    this.armL.rotation.z = this._armLBase.z + kf(t, [[0, 0], [0.15, 0.8], [0.5, -0.6], [1, 0]]);
+    this.riderUpper.rotation.z = kf(t, [[0, 0], [0.2, 0.14], [0.5, -0.24], [1, 0]]);
   }
 
   // E: hop off the horse (it waits where you left it) / climb back on nearby

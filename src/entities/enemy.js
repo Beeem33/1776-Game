@@ -488,8 +488,33 @@ export class Enemy {
     if (this.dying) {
       // Corpses persist on the field; the ragdoll goes to sleep once still
       if (this.ragdoll && !this.ragdoll.sleeping) this.ragdoll.update(dt);
+      // The riderless horse gallops away from the fight, then leaves
+      if (this.fleeT > 0) {
+        this.fleeT -= dt;
+        let dy = this._fleeYaw - this.group.rotation.y;
+        while (dy > Math.PI) dy -= Math.PI * 2;
+        while (dy < -Math.PI) dy += Math.PI * 2;
+        this.group.rotation.y += dy * Math.min(1, 3 * dt);
+        const fx = Math.sin(this._fleeYaw);
+        const fz = Math.cos(this._fleeYaw);
+        this.group.position.x += fx * 12 * dt;
+        this.group.position.z += fz * 12 * dt;
+        this.legPhase += dt * 8;
+        const swing = Math.sin(this.legPhase);
+        if (this.horseLegs) {
+          for (const leg of this.horseLegs) {
+            leg.rotation.x = swing * 0.75 * (leg.userData.phaseGroup === 0 ? 1 : -1);
+          }
+        }
+        this.group.position.y =
+          terrainHeight(this.group.position.x, this.group.position.z) + Math.abs(swing) * 0.1;
+        if (this.fleeT <= 0) this.scene.remove(this.group); // gone over the hills
+      }
       return;
     }
+
+    // Held in the patriot's finisher: the cutscene drives this body
+    if (this.inFinisher) return;
 
     const toPlayer = new THREE.Vector3().subVectors(playerPos, this.group.position);
     toPlayer.y = 0;
@@ -753,19 +778,39 @@ export class Enemy {
       }
     }
 
-    // Knock the body flying — every joint flails on its own
-    this.ragdoll = new Ragdoll(
-      this.scene, this.group, impulse,
-      this.type === 'cavalry' ? 0.95 : 0.5,
-      this.limbs, this.particles, droppedGun, severed
-    );
+    if (this.type === 'cavalry') {
+      // The rider topples out of the saddle and crumples in the grass —
+      // his horse survives, bolts riderless for the horizon, and leaves
+      // the field. Only the man ragdolls, gently (no rocket launch).
+      this.scene.attach(this.soldier);
+      const riderLimbs = {};
+      for (const [k, pivot] of Object.entries(this.limbs)) {
+        if (!k.startsWith('hleg')) riderLimbs[k] = pivot;
+      }
+      const soft = impulse.clone().multiplyScalar(0.4);
+      soft.y = Math.min(impulse.y * 0.3, 1.5);
+      this.ragdoll = new Ragdoll(
+        this.scene, this.soldier, soft, 0.45,
+        riderLimbs, this.particles, droppedGun, severed
+      );
+      this.fleeT = 7;
+      this._fleeYaw = this.heading + Math.PI;
+    } else {
+      // Knock the body flying — every joint flails on its own
+      this.ragdoll = new Ragdoll(
+        this.scene, this.group, impulse, 0.5,
+        this.limbs, this.particles, droppedGun, severed
+      );
+    }
   }
 
   dispose() {
     this.audio.detachSound(this.musicSound, this.group);
     this.musicSound = null;
     if (this.ragdoll) this.ragdoll.dispose();
-    else this.scene.remove(this.group);
+    // For cavalry the ragdoll is only the rider — the horse group (or the
+    // whole body for foot troops, if no ragdoll ever spawned) goes here
+    this.scene.remove(this.group);
     // Geometries/materials live in the shared cache — nothing else to free
   }
 }

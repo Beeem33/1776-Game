@@ -127,7 +127,8 @@ export class WaveManager {
     }
 
     // Soft separation so squadmates don't stack inside each other
-    const alive = this.enemies.filter((e) => !e.dying && !e.dead);
+    // (a man locked in the finisher is pinned — nothing shoves him)
+    const alive = this.enemies.filter((e) => !e.dying && !e.dead && !e.inFinisher);
     for (let i = 0; i < alive.length; i++) {
       for (let j = i + 1; j < alive.length; j++) {
         const a = alive[i].group.position;
