@@ -118,10 +118,15 @@ export class WaveManager {
       }
     }
 
-    // Corpses persist on the battlefield for the whole run — only a
-    // performance backstop removes the oldest once the field is truly littered
+    // Corpses fade from the field after a minute (their dropped guns stay
+    // behind as battle litter) so long runs never bog down; a hard cap
+    // still guards against sudden pileups
     const CORPSE_CAP = 70;
     const corpses = this.enemies.filter((e) => e.dying && !e.dead);
+    for (const c of corpses) {
+      c.deadT = (c.deadT || 0) + dt;
+      if (c.deadT > 60) c.dead = true;
+    }
     for (let i = 0; i < corpses.length - CORPSE_CAP; i++) {
       corpses[i].dead = true;
     }

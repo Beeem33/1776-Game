@@ -16,6 +16,7 @@ battlefield. Built with vanilla Three.js. Desktop browser + mouse required.
 | **Right click (hold)** | aim down the sight |
 | **R** | reload |
 | **Shift** | sprint |
+| **Ctrl** | dive in the direction of travel (on foot) |
 | **Space** | jump (mounted) |
 | **E** | dismount / remount — or man a captured cannon (kill its crew first) |
 | **V** | camera: hip / far / first person |

@@ -433,21 +433,21 @@ class Game {
 
   // ---------------- captured cannons ----------------
 
-  // A crewless cannon in reach: already-claimed guns first, then any piece
-  // whose crew died (claiming it detaches it from the corpse's cleanup)
+  // Every cannon whose crew has died gets tracked, so the gun survives its
+  // crew's corpse despawning and can be manned any time later
+  _adoptAbandonedGuns() {
+    for (const e of this.waves.enemies) {
+      if (e.type !== 'cannon' || !e.dying || !e.artPiece || e.artPiece.parent !== this.scene) continue;
+      this.freeCannons.push({ piece: e.artPiece, tip: e.cannonTip });
+      e.artPiece = null;
+    }
+  }
+
+  // A crewless, claimed cannon within reach of the player, or null
   _nearbyFreeCannon(range) {
     const p = this.player.position;
     for (const f of this.freeCannons) {
       if (Math.hypot(f.piece.position.x - p.x, f.piece.position.z - p.z) < range) return f;
-    }
-    for (const e of this.waves.enemies) {
-      if (e.type !== 'cannon' || !e.dying || !e.artPiece || e.artPiece.parent !== this.scene) continue;
-      if (Math.hypot(e.artPiece.position.x - p.x, e.artPiece.position.z - p.z) < range) {
-        const f = { piece: e.artPiece, tip: e.cannonTip };
-        e.artPiece = null; // the gun is yours now — it outlives the corpse
-        this.freeCannons.push(f);
-        return f;
-      }
     }
     return null;
   }
@@ -1228,6 +1228,10 @@ class Game {
         return;
       }
     }
+
+    // Claim guns off dead crews right away so the piece stays mannable
+    // even after the corpse itself despawns
+    this._adoptAbandonedGuns();
 
     // --- E: man a captured cannon, else dismount / remount ---
     const eDown = this.input.isDown('KeyE');

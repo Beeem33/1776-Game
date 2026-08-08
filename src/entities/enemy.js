@@ -825,9 +825,8 @@ export class Enemy {
     // For cavalry the ragdoll is only the rider — the horse group (or the
     // whole body for foot troops, if no ragdoll ever spawned) goes here
     this.scene.remove(this.group);
-    if (this.artPiece && this.artPiece.parent === this.scene) {
-      this.scene.remove(this.artPiece);
-    }
+    // A detached artillery piece stays planted on the field — the gun
+    // outlives its crew (and can still be manned by the player)
     // Geometries/materials live in the shared cache — nothing else to free
   }
 }

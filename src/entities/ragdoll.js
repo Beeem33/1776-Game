@@ -450,7 +450,8 @@ export class Ragdoll {
     for (const S of this.severed) this.scene.remove(S.obj);
     this.severed = [];
     if (this.gun) {
-      this.scene.remove(this.gun.g);
+      // The dropped musket STAYS in the grass — battle litter outlives
+      // the man who carried it
       this.gun = null;
     }
     if (this.pool) {

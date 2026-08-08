@@ -91,6 +91,11 @@ export class Player {
     this.justLanded = false;
     this._spaceWasDown = false;
 
+    // Helldivers-style dive (Ctrl, on foot)
+    this.diveT = null;
+    this.diveDir = new THREE.Vector3();
+    this._ctrlWasDown = false;
+
     this._reloadT = null;   // null = not reloading
     this.recoil = 0;        // 0..1 gun kickback, decays each frame
 
@@ -831,12 +836,7 @@ export class Player {
       this.uziMag.position.copy(this._magRest);
       this.uziMag.rotation.set(0.12, 0, 0);
       this.uziMag.visible = true;
-      this.armL.position.copy(this._armLRestPos);
-      this.armL.quaternion.copy(this._armLRestQuat);
-      this.handL.position.copy(this._handLRest);
-      this._fpForeL.position.copy(this._fpForeLRestPos);
-      this._fpForeL.quaternion.copy(this._fpForeLRestQuat);
-      this._fpHandL.position.copy(this._fpHandLRest);
+      this._followMag();
       return;
     }
     const kf = this._kf.bind(this);
@@ -859,9 +859,16 @@ export class Player {
     this.uziMag.rotation.x = 0.12 + kf(t, [[0.16, 0], [0.42, 0.5], [0.58, 0.5], [0.82, 0]]);
     this.uziMag.visible = !(t > 0.46 && t < 0.54);
 
-    // The left hand CHASES the magazine through the whole swap — it rides
-    // the empty out, carries the fresh one back, and slaps it home. Third
-    // person stretches the arm to the mag; first person tracks hand+forearm.
+    this._followMag();
+  }
+
+  // The left hand grips the magazine AT ALL TIMES: the resting two-handed
+  // hold is ON the mag well, and during a reload the same hand rides the
+  // empty out and carries the fresh one home — so it's clearly the LEFT
+  // arm working the gun while the right just holds it. Third person
+  // stretches the whole arm from the shoulder; first person tracks the
+  // viewmodel hand + forearm from a fixed elbow.
+  _followMag() {
     const magW = new THREE.Vector3();
     this.uziMag.getWorldPosition(magW);
     if (this.riderUpper.visible) {
@@ -900,7 +907,23 @@ export class Player {
     const sprint = (input.isDown('ShiftLeft') || input.isDown('ShiftRight')) && move.lengthSq() > 0;
     this.sprinting = sprint;
 
-    if (move.lengthSq() > 0 && !this.mounted) {
+    // Ctrl on foot: dive hard in the direction of travel — a Helldivers
+    // hit-the-dirt lunge that carries you clear of incoming fire
+    const ctrlDown = input.isDown('ControlLeft') || input.isDown('ControlRight');
+    if (!this.mounted && ctrlDown && !this._ctrlWasDown &&
+        this.diveT == null && move.lengthSq() > 0) {
+      this.diveT = 0;
+      this.diveDir.copy(move).normalize();
+      this.velocity.copy(this.diveDir).multiplyScalar(13);
+      this.airborne = true;
+      this.vy = 3.2;
+    }
+    this._ctrlWasDown = ctrlDown;
+
+    if (this.diveT != null && !this.mounted) {
+      // Committed mid-dive: no steering, just momentum bleeding off
+      this.velocity.multiplyScalar(Math.max(0, 1 - 1.3 * dt));
+    } else if (move.lengthSq() > 0 && !this.mounted) {
       // On foot: nimble direct movement, no galloping inertia
       move.normalize();
       const footCap = sprint ? 10.5 : 6.5;
@@ -1023,7 +1046,21 @@ export class Player {
 
     // --- locomotion animation ---
     const ratio = this.speedRatio;
-    if (!this.mounted) {
+    if (!this.mounted && this.diveT != null) {
+      // The dive: launch flat, hit the dirt full length, push back upright
+      this.diveT += dt / 0.85;
+      if (this.diveT >= 1) {
+        this.diveT = null;
+        this.footRoot.rotation.x = 0;
+      } else {
+        const dv = this.diveT;
+        const lie = dv < 0.35 ? dv / 0.35 : dv < 0.65 ? 1 : 1 - (dv - 0.65) / 0.35;
+        this.footRoot.rotation.x = 1.35 * lie;
+        this.footLegs[0].rotation.x = -0.4 * lie;
+        this.footLegs[1].rotation.x = -0.25 * lie;
+        this.footRoot.position.y = 0;
+      }
+    } else if (!this.mounted) {
       // Walking on foot: alternate leg swing, light bob. Sprinting pumps the
       // legs harder and faster and pitches the whole body into the run.
       const footRatio = Math.min(this.velocity.length() / 6.5, 1);
@@ -1104,6 +1141,7 @@ export class Player {
     this.vy = 0;
     this.airborne = false;
     this.sprinting = false;
+    this.diveT = null;
     this.footRoot.rotation.x = 0;
     this._reloadT = null;
     this._swingT = null;
