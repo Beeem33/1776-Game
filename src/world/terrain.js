@@ -73,16 +73,17 @@ export function blastCrater(scene, x, z, scale = 1) {
     pos.needsUpdate = true;
     _groundGeo.computeVertexNormals();
 
-    // Collapse grass blades caught in the blast bowl
+    // Grass inside the bowl is gone — vaporized, not flattened
     if (_grassMesh) {
       const arr = _grassMesh.instanceMatrix.array;
+      const rr = r * 1.15;
       for (let i = 0; i < _grassMesh.count; i++) {
         const bx = arr[i * 16 + 12];
         const bz = arr[i * 16 + 14];
         const ddx = bx - x;
         const ddz = bz - z;
-        if (ddx * ddx + ddz * ddz < r * r) {
-          for (let c = 0; c < 12; c++) arr[i * 16 + c] *= 0.02;
+        if (ddx * ddx + ddz * ddz < rr * rr) {
+          for (let c = 0; c < 12; c++) arr[i * 16 + c] = 0;
         }
       }
       _grassMesh.instanceMatrix.needsUpdate = true;

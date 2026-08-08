@@ -52,6 +52,27 @@ export class Particles {
     });
   }
 
+  // Dark bullet pock pressed into a tree trunk, facing out along the
+  // radial normal, plus a spray of bark chips. Capped FIFO so a long
+  // firefight can't pile up geometry forever.
+  bulletHole(point, nx, nz) {
+    if (!this._holeGeo) {
+      this._holeGeo = new THREE.CircleGeometry(0.07, 8);
+      this._holeMat = new THREE.MeshBasicMaterial({ color: 0x17110b });
+      this._holes = [];
+    }
+    const m = new THREE.Mesh(this._holeGeo, this._holeMat);
+    m.position.set(point.x + nx * 0.03, point.y, point.z + nz * 0.03);
+    m.lookAt(point.x + nx, point.y, point.z + nz);
+    this.scene.add(m);
+    this._holes.push(m);
+    if (this._holes.length > 140) this.scene.remove(this._holes.shift());
+
+    this.spawnBurst(new THREE.Vector3(point.x + nx * 0.12, point.y, point.z + nz * 0.12), {
+      color: 0x6a5138, count: 6, speed: 2.5, size: 0.12, life: 0.5, gravity: 12, upBias: 1,
+    });
+  }
+
   smoke(pos) {
     this.spawnBurst(pos, {
       color: 0xcfd2cc,

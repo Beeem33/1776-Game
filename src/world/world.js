@@ -30,7 +30,13 @@ function addTree(parent, x, z, scale) {
   tree.scale.setScalar(scale);
   tree.rotation.y = Math.random() * Math.PI * 2;
   parent.add(tree);
-  addCircleCollider(x, z, 0.55 * scale, true); // trunk blocks movement
+  // Trunk blocks movement AND bullets; mesh ref lets explosions blast the
+  // tree apart and shots pock the bark within the trunk-height window
+  addCircleCollider(x, z, 0.55 * scale, true, {
+    mesh: tree,
+    baseY: tree.position.y,
+    trunkTop: tree.position.y + 3.6 * scale,
+  });
 }
 
 // Low rounded shrub: 2-3 overlapping dark green spheres

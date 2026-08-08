@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { createWorld, updateSun, houseChunks } from './world/world.js';
+import { colliders, removeCollider } from './world/colliders.js';
 import { windClock, terrainHeight, blastCrater } from './world/terrain.js';
 import { Weather } from './world/weather.js';
 import { DebrisManager } from './world/debris.js';
@@ -293,8 +294,32 @@ class Game {
     const r = blastCrater(this.scene, at.x, at.z, big ? 2.6 : 1);
     const k = big ? 3.4 : 1; // effect scale
 
-    // Carve nearby house walls into flying rubble
-    this._blastHouseChunks(at, r * 0.6 + 1.6);
+    // Carve nearby house walls into flying rubble — anything standing over
+    // the new bowl loses its footing and comes down with it
+    this._blastHouseChunks(at, Math.max(r * 0.6 + 1.6, r * 0.95));
+
+    // Fences undermined by the blast splinter into flying rails
+    for (let i = colliders.length - 1; i >= 0; i--) {
+      const c = colliders[i];
+      if (c.kind !== 'segment' || !c.breakable) continue;
+      const dF = Math.min(
+        Math.hypot(c.x1 - at.x, c.z1 - at.z),
+        Math.hypot(c.x2 - at.x, c.z2 - at.z),
+        Math.hypot((c.x1 + c.x2) / 2 - at.x, (c.z1 + c.z2) / 2 - at.z)
+      );
+      if (dF > r + 2) continue;
+      removeCollider(c);
+      const rails = c.pieces || (c.fenceGroup ? [...c.fenceGroup.children] : []);
+      for (const piece of rails) {
+        this.scene.attach(piece);
+        const away = piece.position.clone().sub(at);
+        away.y = Math.abs(away.y) * 0.3 + 1.5 + Math.random() * 2.5;
+        away.setLength(5 + Math.random() * 6);
+        this.debris.add(piece, away, new THREE.Vector3(
+          (Math.random() - 0.5) * 8, (Math.random() - 0.5) * 6, (Math.random() - 0.5) * 8
+        ));
+      }
+    }
 
     // The ground just sank here — wake corpses resting near the new crater
     // so bodies, torn-off limbs and blood pools tumble down into the bowl
@@ -303,6 +328,30 @@ class Game {
       if (!e.dying || !e.ragdoll) continue;
       const dc = Math.hypot(e.group.position.x - at.x, e.group.position.z - at.z);
       if (dc < r * 2 + 2) e.ragdoll.wake();
+    }
+
+    // Trees caught in the blast burst apart: trunk and boughs separate,
+    // tumble through the air, and come to rest in the grass as debris
+    for (let i = colliders.length - 1; i >= 0; i--) {
+      const c = colliders[i];
+      if (c.kind !== 'circle' || !c.isTree || !c.mesh) continue;
+      const dTree = Math.hypot(c.x - at.x, c.z - at.z);
+      if (dTree > r + 4) continue;
+      removeCollider(c);
+      for (const piece of [...c.mesh.children]) {
+        this.scene.attach(piece);
+        const away = piece.position.clone().sub(at);
+        away.y = Math.abs(away.y) * 0.25 + 2 + Math.random() * 3.5;
+        away.setLength(7 + Math.random() * 8);
+        this.debris.add(piece, away, new THREE.Vector3(
+          (Math.random() - 0.5) * 7, (Math.random() - 0.5) * 5, (Math.random() - 0.5) * 7
+        ));
+      }
+      c.mesh.removeFromParent();
+      this.particles.spawnBurst(
+        new THREE.Vector3(c.x, terrainHeight(c.x, c.z) + 2.5, c.z),
+        { color: 0x5a4128, count: 22, speed: 7, size: 0.28, life: 1.1, gravity: 14, upBias: 5 }
+      );
     }
 
     // Dirt hurled HIGH into the sky: a tall central column + a wide fan
@@ -531,19 +580,22 @@ class Game {
     this._cineBottom.classList.add('in');
 
     const P = this.player;
-    if (P.mounted) P.toggleMount(); // horse waits ahead; the man walks to it
+    if (P.mounted) P.toggleMount(); // the man opens on foot
+    P.meshRoot.visible = false;     // no horse anywhere in the frame
     const heading = Math.PI / 5;
     if (P._parked) P._parked.heading = heading;
     const walkDir = new THREE.Vector3(Math.sin(heading), 0, Math.cos(heading));
-    const horse = P.meshRoot.position.clone();
-    P.group.position.set(horse.x - walkDir.x * 11, 0, horse.z - walkDir.z * 11);
+    P.group.position.set(
+      P.meshRoot.position.x - walkDir.x * 11, 0,
+      P.meshRoot.position.z - walkDir.z * 11
+    );
     P.group.position.y = terrainHeight(P.group.position.x, P.group.position.z);
     P.heading = heading;
     P.group.rotation.y = heading;
     P.riderUpper.rotation.y = 0;
     P.velocity.set(0, 0, 0);
 
-    this.intro = { t: 0, walkDir, horse, reloadSfx: false };
+    this.intro = { t: 0, walkDir, reloadSfx: false, fpOn: false };
     this._syncAudio();
   }
 
@@ -561,10 +613,8 @@ class Game {
 
     if (t >= 2 && this._cineFade.style.opacity !== '0') this._cineFade.style.opacity = '0';
 
-    // The slow walk toward the waiting horse
-    const toHorse = new THREE.Vector3().subVectors(I.horse, P.group.position);
-    toHorse.y = 0;
-    if (t >= 2 && toHorse.length() > 1.7) {
+    // The slow, steady walk through the wet grass — the whole picture long
+    if (t >= 2) {
       P.group.position.addScaledVector(I.walkDir, 1.35 * dt);
       P.group.position.y = terrainHeight(P.group.position.x, P.group.position.z);
       P._footPhase += dt * 3.6;
@@ -572,50 +622,67 @@ class Game {
       P.footLegs[0].rotation.x = swing;
       P.footLegs[1].rotation.x = -swing;
       P.footRoot.position.y = Math.abs(Math.sin(P._footPhase)) * 0.04;
-    } else {
-      P.footLegs[0].rotation.x *= 1 - Math.min(1, 8 * dt);
-      P.footLegs[1].rotation.x *= 1 - Math.min(1, 8 * dt);
     }
 
-    // He seats a fresh magazine — slow, unhurried, inevitable
-    if (t >= 3 && !I.reloadSfx) {
-      I.reloadSfx = true;
-      this.audio.playSfx('reload', { volume: 0.75, rate: 0.5 });
+    // Shot 3 is first person: he racks a fresh mag and looks the gun over
+    if (t >= 6.6 && !I.fpOn) {
+      I.fpOn = true;
+      P.setFirstPerson(true, this.camera);
     }
-    if (t >= 3 && t < 7.2) P.setReloadT(Math.min((t - 3) / 4, 0.999));
+    if (t >= 6.8 && !I.reloadSfx) {
+      I.reloadSfx = true;
+      this.audio.playSfx('reload', { volume: 0.8, rate: 0.85 });
+    }
+    if (t >= 6.8 && t < 9.0) P.setReloadT(Math.min((t - 6.8) / 2.2, 0.999));
     else P.setReloadT(null);
     P._applyReloadPose();
+    if (I.fpOn) {
+      // After seating the mag he tilts the piece over, inspecting it
+      const ins = THREE.MathUtils.clamp((t - 9.0) / 0.5, 0, 1);
+      const settle = THREE.MathUtils.clamp((t - 10.0) / 0.4, 0, 1);
+      const k = ins * (1 - settle);
+      P.fpAnchor.rotation.y = Math.PI + k * 0.5;
+      P.fpAnchor.rotation.z = -k * 0.35;
+      P.fpAnchor.rotation.x = k * 0.15;
+    }
 
-    // Two long, low letterboxed shots
+    // Three letterboxed shots
+    P.group.updateMatrixWorld(true);
     const base = P.group.position.clone();
     const right = new THREE.Vector3(I.walkDir.z, 0, -I.walkDir.x);
-    if (t < 5.6) {
-      // Shot 1 — tracking alongside at chest height, drifting with him
+    if (t < 4.3) {
+      // Shot 1 — boots in the dirt: low tracking close-up on the feet
       const cam = base.clone()
-        .addScaledVector(right, 3.1)
-        .addScaledVector(I.walkDir, -0.6 + t * 0.12);
-      cam.y = terrainHeight(cam.x, cam.z) + 1.15;
+        .addScaledVector(right, 1.5)
+        .addScaledVector(I.walkDir, 1.1);
+      cam.y = terrainHeight(cam.x, cam.z) + 0.45;
       this.camera.position.copy(cam);
-      const look = base.clone().addScaledVector(I.walkDir, 0.8);
-      look.y += 1.3;
+      const look = base.clone().addScaledVector(I.walkDir, 0.2);
+      look.y += 0.35;
       this.camera.lookAt(look);
-    } else {
-      // Shot 2 — low front angle, slowly pulling back as he closes in
-      const pull = 4.4 - (t - 5.6) * 0.25;
+    } else if (t < 6.6) {
+      // Shot 2 — a long, wide shot: one small figure crossing the field
       const cam = base.clone()
-        .addScaledVector(I.walkDir, pull)
-        .addScaledVector(right, -1.2);
-      cam.y = terrainHeight(cam.x, cam.z) + 0.95;
+        .addScaledVector(right, 13)
+        .addScaledVector(I.walkDir, -14);
+      cam.y = terrainHeight(cam.x, cam.z) + 3.2;
       this.camera.position.copy(cam);
       const look = base.clone();
-      look.y += 1.45;
+      look.y += 1.2;
+      this.camera.lookAt(look);
+    } else {
+      // Shot 3 — through his own eyes: gun up, fresh mag, quick once-over
+      P.eyeAnchor.getWorldPosition(this._eyePos);
+      this.camera.position.copy(this._eyePos);
+      const look = this._eyePos.clone().addScaledVector(I.walkDir, 10);
+      look.y -= 1.1;
       this.camera.lookAt(look);
     }
 
     this.input.consumeMouseDelta();
     this.input.consumeWheel();
 
-    if (t >= 9.2) this._endIntro();
+    if (t >= 10.6) this._endIntro();
   }
 
   _endIntro() {
@@ -623,7 +690,10 @@ class Game {
     this.intro = null;
     P.setReloadT(null);
     P._applyReloadPose();
-    // Swing into the saddle and take the reins
+    P.fpAnchor.rotation.set(0, Math.PI, 0);
+    // The horse reappears with the world; swing into the saddle
+    P.meshRoot.visible = true;
+    P.setFirstPerson(false, this.camera);
     P.group.position.copy(P.meshRoot.position);
     P.toggleMount();
     this.state = 'playing';
@@ -631,6 +701,7 @@ class Game {
     this._cineFade.style.opacity = '0';
     this._cineTop.classList.remove('in');
     this._cineBottom.classList.remove('in');
+    this.camCtrl.viewIndex = 1; // hand control back in third person
     this.camCtrl.yaw = P.heading + Math.PI;
     this.camCtrl.pitch = 0.22;
     this.camCtrl._initialized = false; // snap cleanly in behind the rider
@@ -778,6 +849,7 @@ class Game {
             this.particles.blood(chest.clone().addScaledVector(fwd, 0.25), false);
             this.audio.playSfx('squish', { volume: 0.9, rate: 1.15, rateJitter: 0.12 });
             this.camCtrl.addShake(0.09);
+            this.ui.screenBlood();
           }
         } else {
           F.done = true;
@@ -1023,6 +1095,7 @@ class Game {
         at.y += 1.4;
         this.particles.blood(at, killed);
         if (killed) this.waves.onKill();
+        this.ui.screenBlood(); // sword range = blood in your face
       }
       this.audio.playSfx(hitAny ? 'squish' : 'whistle', {
         volume: hitAny ? 0.8 : 0.3, rate: hitAny ? 1.1 : 1.7, rateJitter: 0.1,
@@ -1115,6 +1188,7 @@ class Game {
           this.player.swingSword(); // saber flashes through the arc (horse)
           this.audio.playSfx('squish', { volume: 0.9, rateJitter: 0.1 });
           this.camCtrl.addShake(0.2);
+          this.ui.screenBlood(); // trampling a man is a messy business
           const splat = e.group.position.clone();
           splat.y += 1.2;
           this.particles.blood(splat, true);
@@ -1235,6 +1309,8 @@ class Game {
         const killed = enemy.takeDamage(dmg, impulse);
         this.particles.blood(point, killed || zone === 'head');
         if (killed) this.waves.onKill();
+        // Close-range gore splashes the lens
+        if (point.distanceTo(this.player.position) < 8) this.ui.screenBlood();
       },
       this.camCtrl,
       reloadRequested,

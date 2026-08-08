@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { box, cyl, sphere } from '../core/assets.js';
 import { terrainHeight } from '../world/terrain.js';
-import { resolvePoint, nearestTree } from '../world/colliders.js';
+import { resolvePoint, nearestTree, treeHitAlong } from '../world/colliders.js';
 import { Ragdoll } from './ragdoll.js';
 
 const REDS = [0xa8241c, 0x9c2018, 0xb32a20, 0x93211a]; // per-unit coat variation
@@ -363,6 +363,7 @@ export class Enemy {
     c.add(this.cannonTip);
 
     c.position.set(1.15, 0, 0);
+    this.artPiece = c; // stays planted when the crew is killed
     this.group.add(c);
   }
 
@@ -391,6 +392,7 @@ export class Enemy {
     m.add(this.mortarTip);
 
     m.position.set(0.95, 0, 0.1);
+    this.artPiece = m; // stays planted when the crew is killed
     this.group.add(m);
   }
 
@@ -711,23 +713,33 @@ export class Enemy {
 
     // Smoothbore muskets are wildly inaccurate — most balls whistle past
     const hitChance = Math.max(0.05, 0.36 - dist * 0.005);
-    const hit = Math.random() < hitChance;
-    if (hit) {
-      events.push({ type: 'musket', damage: 9, enemy: this });
-    }
+    let hit = Math.random() < hitChance;
 
-    // Visible ball trace: a smoky wake along the flight path that drifts
-    // up and dissipates — at the rider on a hit, whistling wide on a miss
-    if (this.particles && playerPos) {
-      const target = playerPos.clone();
+    // Where the ball actually flies — at the rider on a hit, wide on a miss
+    let target = null;
+    if (playerPos) {
+      target = playerPos.clone();
       target.y += 1.9;
       if (!hit) {
         target.x += (Math.random() - 0.5) * 7;
         target.y += (Math.random() - 0.2) * 3;
         target.z += (Math.random() - 0.5) * 7;
       }
-      this.particles.trailSmoke(tip, target);
+      // A trunk in the ball's path soaks it: pocked bark, no damage through
+      const bark = treeHitAlong(tip, target);
+      if (bark) {
+        hit = false;
+        target = new THREE.Vector3(bark.point.x, bark.point.y, bark.point.z);
+        if (this.particles) this.particles.bulletHole(bark.point, bark.nx, bark.nz);
+      }
     }
+
+    if (hit) {
+      events.push({ type: 'musket', damage: 9, enemy: this });
+    }
+
+    // Visible ball trace: a smoky wake along the flight path
+    if (this.particles && target) this.particles.trailSmoke(tip, target);
   }
 
   // impulse: world-space kick applied to the ragdoll
@@ -796,6 +808,8 @@ export class Enemy {
       this.fleeT = 7;
       this._fleeYaw = this.heading + Math.PI;
     } else {
+      // Gun crews die alone — the piece stays planted where it stood
+      if (this.artPiece) this.scene.attach(this.artPiece);
       // Knock the body flying — every joint flails on its own
       this.ragdoll = new Ragdoll(
         this.scene, this.group, impulse, 0.5,
@@ -811,6 +825,9 @@ export class Enemy {
     // For cavalry the ragdoll is only the rider — the horse group (or the
     // whole body for foot troops, if no ragdoll ever spawned) goes here
     this.scene.remove(this.group);
+    if (this.artPiece && this.artPiece.parent === this.scene) {
+      this.scene.remove(this.artPiece);
+    }
     // Geometries/materials live in the shared cache — nothing else to free
   }
 }

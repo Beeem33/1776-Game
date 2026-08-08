@@ -7,8 +7,39 @@ export function clearColliders() {
   colliders.length = 0;
 }
 
-export function addCircleCollider(x, z, r, isTree = false) {
-  colliders.push({ kind: 'circle', x, z, r, isTree });
+export function addCircleCollider(x, z, r, isTree = false, meta = {}) {
+  colliders.push({ kind: 'circle', x, z, r, isTree, ...meta });
+}
+
+// First tree trunk a shot passes through between two world points, or null.
+// 2D ray-circle test with a trunk-height window; returns the bark surface
+// point, its outward normal and the collider, so callers can pock the bark
+// and stop the ball there.
+export function treeHitAlong(from, to) {
+  const dx = to.x - from.x;
+  const dz = to.z - from.z;
+  const len2 = dx * dx + dz * dz;
+  if (len2 < 1e-6) return null;
+  let best = null;
+  for (const c of colliders) {
+    if (!c.isTree) continue;
+    const fx = from.x - c.x;
+    const fz = from.z - c.z;
+    const b = 2 * (fx * dx + fz * dz);
+    const cc = fx * fx + fz * fz - c.r * c.r;
+    const disc = b * b - 4 * len2 * cc;
+    if (disc <= 0) continue;
+    const t = (-b - Math.sqrt(disc)) / (2 * len2);
+    if (t <= 0.001 || t >= 0.999) continue;
+    const y = from.y + (to.y - from.y) * t;
+    if (c.baseY != null && (y < c.baseY || y > c.trunkTop)) continue;
+    if (!best || t < best.t) {
+      const px = from.x + dx * t;
+      const pz = from.z + dz * t;
+      best = { t, point: { x: px, y, z: pz }, nx: (px - c.x) / c.r, nz: (pz - c.z) / c.r, tree: c };
+    }
+  }
+  return best;
 }
 
 export function addSegmentCollider(x1, z1, x2, z2, r, meta = {}) {

@@ -573,9 +573,11 @@ export class Player {
     this.fpAnchor = new THREE.Group();
     this.fpAnchor.rotation.y = Math.PI; // rig +Z = camera forward
     // Hip pose low-right; holding right-click glides the gun to screen
-    // center for aimed fire
+    // center for aimed fire; sprinting swings it across the body
+    // (+0.026 compensates the rig's mirrored x so the barrel is dead center)
     this._fpRest = new THREE.Vector3(0.32, -0.36, -0.38);
-    this._fpAim = new THREE.Vector3(-0.026, -0.3, -0.3);
+    this._fpAim = new THREE.Vector3(0.026, -0.3, -0.3);
+    this._fpSprint = new THREE.Vector3(0.16, -0.47, -0.33);
     this.fpAnchor.position.copy(this._fpRest);
     this.fpAnchor.scale.setScalar(1.3);
     this.fpAnchor.visible = false;
@@ -1029,8 +1031,21 @@ export class Player {
     this._applyReloadPose();
     this._updateSword(dt);
 
-    // ADS: the first-person gun glides between hip and centered-aim poses
-    this.fpAnchor.position.lerp(this.aiming ? this._fpAim : this._fpRest, Math.min(1, 12 * dt));
+    // First-person gun pose: ADS centers it; sprinting swings it low and
+    // diagonal across the body, pumping with the stride, CoD-style
+    const sprintCarry = this.sprinting && !this.aiming;
+    let fpTarget = this.aiming ? this._fpAim : sprintCarry ? this._fpSprint : this._fpRest;
+    if (sprintCarry) {
+      const ph = this.mounted ? this.legPhase : this._footPhase;
+      fpTarget = fpTarget.clone();
+      fpTarget.y += Math.abs(Math.sin(ph)) * 0.05;
+      fpTarget.x += Math.sin(ph * 0.5) * 0.03;
+    }
+    this.fpAnchor.position.lerp(fpTarget, Math.min(1, 12 * dt));
+    const kFp = Math.min(1, 10 * dt);
+    this.fpAnchor.rotation.x += ((sprintCarry ? 0.32 : 0) - this.fpAnchor.rotation.x) * kFp;
+    this.fpAnchor.rotation.y += ((Math.PI + (sprintCarry ? 0.75 : 0)) - this.fpAnchor.rotation.y) * kFp;
+    this.fpAnchor.rotation.z += ((sprintCarry ? -0.14 : 0) - this.fpAnchor.rotation.z) * kFp;
 
     // HP regen after 5s without damage
     this.timeSinceHurt += dt;

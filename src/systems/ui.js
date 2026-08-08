@@ -20,6 +20,68 @@ export class UI {
 
     this._bannerTimer = 0;
     this._vignetteLevel = 0;
+
+    // Screen-blood layer: close-range kills splash gore across the lens
+    this.splatLayer = document.createElement('div');
+    this.splatLayer.style.cssText =
+      'position:fixed;inset:0;pointer-events:none;z-index:30;overflow:hidden;';
+    document.body.appendChild(this.splatLayer);
+    this._splatUrls = [0, 1, 2].map(() => this._makeSplatUrl());
+    this._lastSplatAt = 0;
+  }
+
+  // Painted blood splat (blobs + downward runners), baked once to a data URL
+  _makeSplatUrl() {
+    const S = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = S;
+    canvas.height = S;
+    const ctx = canvas.getContext('2d');
+    const reds = ['#7c0f09', '#8e130c', '#690c07', '#9c1a10'];
+    for (let i = 0; i < 12; i++) {
+      ctx.fillStyle = reds[(Math.random() * reds.length) | 0];
+      ctx.globalAlpha = 0.55 + Math.random() * 0.4;
+      ctx.beginPath();
+      ctx.ellipse(
+        S / 2 + (Math.random() - 0.5) * 90, S / 2 + (Math.random() - 0.5) * 80,
+        10 + Math.random() * 38, 8 + Math.random() * 28,
+        Math.random() * Math.PI, 0, Math.PI * 2
+      );
+      ctx.fill();
+    }
+    for (let i = 0; i < 9; i++) {
+      const x = S / 2 + (Math.random() - 0.5) * 110;
+      const y0 = S / 2 + Math.random() * 20;
+      const len = 25 + Math.random() * 70;
+      ctx.fillStyle = reds[(Math.random() * reds.length) | 0];
+      ctx.globalAlpha = 0.7;
+      ctx.beginPath();
+      ctx.ellipse(x, y0 + len / 2, 2 + Math.random() * 2.5, len / 2, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    return canvas.toDataURL();
+  }
+
+  // Splash 2-4 fading blood splats onto the screen. Throttled so full-auto
+  // kills at point blank don't strobe.
+  screenBlood() {
+    const now = performance.now();
+    if (now - this._lastSplatAt < 220) return;
+    this._lastSplatAt = now;
+    const n = 2 + ((Math.random() * 3) | 0);
+    for (let i = 0; i < n; i++) {
+      const img = document.createElement('img');
+      img.src = this._splatUrls[(Math.random() * this._splatUrls.length) | 0];
+      const size = 16 + Math.random() * 22;
+      img.style.cssText =
+        `position:absolute;left:${10 + Math.random() * 70}%;top:${5 + Math.random() * 70}%;` +
+        `width:${size}vmin;transform:rotate(${(Math.random() * 360) | 0}deg);` +
+        'opacity:0.9;transition:opacity 1.3s ease;';
+      this.splatLayer.appendChild(img);
+      requestAnimationFrame(() => requestAnimationFrame(() => { img.style.opacity = '0'; }));
+      setTimeout(() => img.remove(), 1600);
+    }
   }
 
   showScreen(name) {

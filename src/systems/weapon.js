@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { treeHitAlong } from '../world/colliders.js';
 
 const RPM = 450;
 const FIRE_INTERVAL = 60 / RPM;
@@ -244,6 +245,15 @@ export class Weapon {
             .addScaledVector(this.raycaster.ray.direction, t);
         }
       }
+    }
+
+    // Tree trunks soak bullets: a trunk between you and the mark eats the
+    // ball, pocks the bark, and shields the man hiding behind it
+    const bark = treeHitAlong(this.raycaster.ray.origin, endPoint);
+    if (bark) {
+      endPoint = new THREE.Vector3(bark.point.x, bark.point.y, bark.point.z);
+      hitInfo = null;
+      if (this.particles) this.particles.bulletHole(bark.point, bark.nx, bark.nz);
     }
 
     const muzzlePos = new THREE.Vector3();
