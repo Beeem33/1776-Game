@@ -428,9 +428,14 @@ export class Player {
     this._armLBase = { x: this.armL.rotation.x, z: this.armL.rotation.z };
     this.riderUpper.add(this.armL);
 
-    const handL = sphere(0.08, skin, {}, 8);
-    handL.position.set(0.34, 0.64, 0.5);
-    this.riderUpper.add(handL);
+    this.handL = sphere(0.08, skin, {}, 8);
+    this.handL.position.set(0.34, 0.64, 0.5);
+    this.riderUpper.add(this.handL);
+    // Rest transforms so the reload's mag-chasing hand can come home
+    this._handLRest = this.handL.position.clone();
+    this._armLRestPos = this.armL.position.clone();
+    this._armLRestQuat = this.armL.quaternion.clone();
+    this._armLShoulder = new THREE.Vector3(-0.3, 0.92, 0.04);
 
     // Right arm — parented into a group so it follows the gun during reload
     this.armR = new THREE.Group();
@@ -615,6 +620,14 @@ export class Player {
     const handL = sphere(0.085, skin, {}, 10);
     handL.position.set(-0.03, -0.3, 0.47);
     this.fpAnchor.add(handL);
+
+    // The first-person left hand/forearm chase the mag during reloads
+    this._fpForeL = foreL;
+    this._fpForeLRestPos = foreL.position.clone();
+    this._fpForeLRestQuat = foreL.quaternion.clone();
+    this._fpHandL = handL;
+    this._fpHandLRest = handL.position.clone();
+    this._fpElbow = new THREE.Vector3(-0.36, -0.68, 0.02);
   }
 
   // Standing rig used while dismounted: walking legs under the same
@@ -818,8 +831,12 @@ export class Player {
       this.uziMag.position.copy(this._magRest);
       this.uziMag.rotation.set(0.12, 0, 0);
       this.uziMag.visible = true;
-      this.armL.rotation.x = this._armLBase.x;
-      this.armL.rotation.z = this._armLBase.z;
+      this.armL.position.copy(this._armLRestPos);
+      this.armL.quaternion.copy(this._armLRestQuat);
+      this.handL.position.copy(this._handLRest);
+      this._fpForeL.position.copy(this._fpForeLRestPos);
+      this._fpForeL.quaternion.copy(this._fpForeLRestQuat);
+      this._fpHandL.position.copy(this._fpHandLRest);
       return;
     }
     const kf = this._kf.bind(this);
@@ -842,11 +859,29 @@ export class Player {
     this.uziMag.rotation.x = 0.12 + kf(t, [[0.16, 0], [0.42, 0.5], [0.58, 0.5], [0.82, 0]]);
     this.uziMag.visible = !(t > 0.46 && t < 0.54);
 
-    // Left hand lets go of the reins and works the mag
-    this.armL.rotation.x = this._armLBase.x +
-      kf(t, [[0, 0], [0.25, -0.55], [0.5, -0.35], [0.75, -0.55], [1, 0]]);
-    this.armL.rotation.z = this._armLBase.z +
-      kf(t, [[0, 0], [0.25, 0.5], [0.75, 0.5], [1, 0]]);
+    // The left hand CHASES the magazine through the whole swap — it rides
+    // the empty out, carries the fresh one back, and slaps it home. Third
+    // person stretches the arm to the mag; first person tracks hand+forearm.
+    const magW = new THREE.Vector3();
+    this.uziMag.getWorldPosition(magW);
+    if (this.riderUpper.visible) {
+      const local = magW.clone();
+      this.riderUpper.worldToLocal(local);
+      local.y -= 0.03;
+      this.handL.position.copy(local);
+      const dir = local.clone().sub(this._armLShoulder);
+      this.armL.position.copy(this._armLShoulder).addScaledVector(dir, 0.5);
+      this.armL.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+    }
+    if (this.fpAnchor.visible) {
+      const local = magW.clone();
+      this.fpAnchor.worldToLocal(local);
+      local.y -= 0.05;
+      this._fpHandL.position.copy(local);
+      const dir = local.clone().sub(this._fpElbow);
+      this._fpForeL.position.copy(this._fpElbow).addScaledVector(dir, 0.5);
+      this._fpForeL.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+    }
   }
 
   // ---------------- per-frame ----------------

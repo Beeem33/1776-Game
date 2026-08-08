@@ -62,6 +62,8 @@ class Game {
     this.freeCam = null;  // set = flying spectator cam, AI runs the patriot
     this._ai = null;
     this.intro = null;    // set = opening cinematic is playing
+    this.cannon = null;      // set = the player is manning a captured cannon
+    this.freeCannons = [];   // crewless pieces claimed from dead artillery
     this._cineFade = document.getElementById('cine-fade');
     this._cineTop = document.getElementById('cine-bar-top');
     this._cineBottom = document.getElementById('cine-bar-bottom');
@@ -284,12 +286,12 @@ class Game {
         s.mesh.geometry.dispose();
         s.mesh.material.dispose();
         this.shells.splice(i, 1);
-        this._explodeShell(at, s.big);
+        this._explodeShell(at, s.big, s.noSelf);
       }
     }
   }
 
-  _explodeShell(at, big = false) {
+  _explodeShell(at, big = false, sparePlayer = false) {
     // Dig a real crater into the terrain (scorch, rim clods, flattened grass)
     const r = blastCrater(this.scene, at.x, at.z, big ? 2.6 : 1);
     const k = big ? 3.4 : 1; // effect scale
@@ -403,9 +405,10 @@ class Game {
     });
     this.camCtrl.addShake(Math.min(big ? 1.05 : 0.45, (big ? 24 : 8) / Math.max(dPlayer, 1)));
 
-    // Blast damage to the rider (spared mid-finisher — cinematic luck)...
+    // Blast damage to the rider (spared mid-finisher, and your own
+    // captured-cannon shells don't gut their gunner)...
     const dmgRadius = big ? 11.5 : 7;
-    if (dPlayer < dmgRadius && !this.finisher) {
+    if (dPlayer < dmgRadius && !this.finisher && !sparePlayer) {
       this.player.takeDamage(Math.round((big ? 40 : 30) * (1 - dPlayer / dmgRadius)) + 6);
       this.ui.flashDamage();
       this.audio.playSfx('hurt', { volume: 0.7 });
@@ -426,6 +429,59 @@ class Game {
         this.particles.blood(e.group.position.clone().setY(e.group.position.y + 1), true);
       }
     }
+  }
+
+  // ---------------- captured cannons ----------------
+
+  // A crewless cannon in reach: already-claimed guns first, then any piece
+  // whose crew died (claiming it detaches it from the corpse's cleanup)
+  _nearbyFreeCannon(range) {
+    const p = this.player.position;
+    for (const f of this.freeCannons) {
+      if (Math.hypot(f.piece.position.x - p.x, f.piece.position.z - p.z) < range) return f;
+    }
+    for (const e of this.waves.enemies) {
+      if (e.type !== 'cannon' || !e.dying || !e.artPiece || e.artPiece.parent !== this.scene) continue;
+      if (Math.hypot(e.artPiece.position.x - p.x, e.artPiece.position.z - p.z) < range) {
+        const f = { piece: e.artPiece, tip: e.cannonTip };
+        e.artPiece = null; // the gun is yours now — it outlives the corpse
+        this.freeCannons.push(f);
+        return f;
+      }
+    }
+    return null;
+  }
+
+  _firePlayerCannon(CN) {
+    const from = new THREE.Vector3();
+    CN.tip.getWorldPosition(from);
+    const dir = new THREE.Vector3();
+    this.camera.getWorldDirection(dir);
+    dir.y = Math.max(dir.y, -0.05) + 0.08; // a touch of elevation
+    dir.normalize();
+
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.26, 8, 8),
+      new THREE.MeshStandardMaterial({ color: 0x1d2126, roughness: 0.5, metalness: 0.6 })
+    );
+    mesh.castShadow = true;
+    mesh.position.copy(from);
+    this.scene.add(mesh);
+    this.shells.push({
+      mesh, vel: dir.multiplyScalar(36), g: 11,
+      smokeT: 0, whistled: true, big: true, noSelf: true,
+    });
+
+    this.audio.playSfx('boom', { volume: 0.8, rate: 1.05, rateJitter: 0.05 });
+    this.particles.smoke(from);
+    this.particles.flame(from);
+    this.particles.spark(from);
+    this.particles.smoke(from);
+    const flash = new THREE.PointLight(0xffb35c, 30, 18);
+    flash.position.copy(from);
+    this.scene.add(flash);
+    setTimeout(() => this.scene.remove(flash), 100);
+    this.camCtrl.addShake(0.35);
   }
 
   // ---------------- free camera + AI patriot ----------------
@@ -803,7 +859,7 @@ class Game {
       E.group.rotation.x = -0.2 * grab; // hauled back into the patriot's grip
 
       // He struggles — arms clawing, head twisting — fading as the knife works
-      const struggle = Math.max(0, 1 - Math.max(0, t - 1.9) / (F.stabs * 0.5));
+      const struggle = Math.max(0, 1 - Math.max(0, t - 1.7) / (F.stabs * 0.32));
       const wig = Math.sin(t * 13);
       if (E.limbs.armL) {
         E.limbs.armL.rotation.x = grab * (-0.9 + wig * 0.55 * struggle);
@@ -828,18 +884,22 @@ class Game {
         this.audio.playSfx('reload', { volume: 0.4, rate: 2.2 }); // steel whisper
       }
 
-      // Right arm: draw + raise, then rhythmic stabs into the chest
+      // Right arm: draw + raise, then fast rhythmic stabs that drive the
+      // blade ACROSS into the man's chest — arm sweeping inward over his
+      // shoulder, not jabbing the air beside him
       if (t < 1.2) {
         P.armR.rotation.x = 0;
-      } else if (t < 1.9) {
-        P.armR.rotation.x = -((t - 1.2) / 0.7) * 2.1;
+      } else if (t < 1.7) {
+        P.armR.rotation.x = -((t - 1.2) / 0.5) * 2.0;
       } else if (!F.done) {
-        const cycle = (t - 1.9) / 0.5;
+        const cycle = (t - 1.7) / 0.32;
         const i = Math.floor(cycle);
         const ph = cycle - i;
         if (i < F.stabs) {
-          P.armR.rotation.x = kf(ph, [[0, -2.1], [0.45, -0.45], [0.6, -0.55], [1, -2.1]]);
-          if (ph >= 0.45 && F.stabsDone <= i) {
+          P.armR.rotation.x = kf(ph, [[0, -2.0], [0.4, -0.55], [0.55, -0.65], [1, -2.0]]);
+          P.armR.rotation.z = kf(ph, [[0, 0], [0.4, 0.6], [0.6, 0.5], [1, 0]]);
+          P.armR.rotation.y = kf(ph, [[0, 0], [0.4, -0.3], [1, 0]]);
+          if (ph >= 0.4 && F.stabsDone <= i) {
             F.stabsDone = i + 1;
             // Blood squirts from the chest with every thrust
             const chest = E.group.position.clone();
@@ -853,7 +913,7 @@ class Game {
           }
         } else {
           F.done = true;
-          F.endAt = t + 0.35; // a beat of stillness, then he drops
+          F.endAt = t + 0.3; // a beat of stillness, then he drops
         }
       }
     }
@@ -881,7 +941,7 @@ class Game {
     // Knife away, uzi back up, controls return
     P.knife.visible = false;
     P.uziGroup.visible = true;
-    P.armR.rotation.x = 0;
+    P.armR.rotation.set(0, 0, 0);
     P.armL.rotation.x = P._armLBase.x;
     P.armL.rotation.z = P._armLBase.z;
     P.riderUpper.rotation.x = 0;
@@ -902,6 +962,9 @@ class Game {
     }
     this.freeCam = null;
     this._ai = null;
+    this.cannon = null;
+    for (const f of this.freeCannons) this.scene.remove(f.piece);
+    this.freeCannons = [];
     if (this.intro) {
       this.intro = null;
       this.player.setReloadT(null);
@@ -1062,13 +1125,95 @@ class Game {
       return;
     }
 
-    // --- E: dismount / remount ---
+    // --- manning a captured cannon: aim with the mouse, LMB fires, E steps away ---
+    if (this.cannon) {
+      const CN = this.cannon;
+      const eDownC = this.input.isDown('KeyE');
+      const leave = eDownC && !this._eWasDown;
+      this._eWasDown = eDownC;
+      if (leave) {
+        this.cannon = null;
+        this.ui.showBanner('GUN ABANDONED', 0.9);
+      } else {
+        const P = this.player;
+        // The piece swings ponderously to follow the camera
+        const fwd = this.camCtrl.getGroundForward();
+        const aimYaw = Math.atan2(fwd.x, fwd.z);
+        let dyaw = aimYaw - CN.piece.rotation.y;
+        while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+        while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+        CN.piece.rotation.y += dyaw * Math.min(1, 4 * dt);
+
+        // Gunner stands planted at the trail
+        P.velocity.set(0, 0, 0);
+        P.group.position.set(
+          CN.piece.position.x - Math.sin(CN.piece.rotation.y) * 2.3, 0,
+          CN.piece.position.z - Math.cos(CN.piece.rotation.y) * 2.3
+        );
+        P.group.position.y = terrainHeight(P.group.position.x, P.group.position.z);
+        P.heading = CN.piece.rotation.y;
+        P.group.rotation.y = P.heading;
+
+        this.camCtrl.bodyLift = -1.0;
+        P.eyeAnchor.getWorldPosition(this._eyePos);
+        this.camCtrl.update(dt, P.position, this.input.consumeMouseDelta(), this._eyePos);
+        this.input.consumeWheel();
+
+        CN.cd = Math.max(0, CN.cd - dt);
+        if (this.input.fireHeld && CN.cd <= 0) {
+          CN.cd = 3;
+          this._firePlayerCannon(CN);
+        }
+
+        const events = [];
+        this.waves.update(dt, P.position, events);
+        for (const ev of events) {
+          if (ev.type === 'mortarFire' || ev.type === 'cannonFire') {
+            this._launchShell(ev);
+            continue;
+          }
+          P.takeDamage(ev.damage);
+          this.ui.flashDamage();
+          this.audio.playSfx('hurt', { volume: 0.6, rateJitter: 0.1 });
+          this.camCtrl.addShake(0.18);
+        }
+        this._updateShells(dt);
+        if (P.hp <= 0) {
+          this.cannon = null;
+          this._die();
+          return;
+        }
+        this.ui.update(dt, {
+          wave: this.waves.wave,
+          aliveCount: this.waves.aliveCount,
+          kills: this.waves.kills,
+          hp: P.hp,
+          maxHp: P.maxHp,
+          heat: CN.cd / 3,
+          overheated: false,
+          ammo: CN.cd <= 0 ? 1 : 0,
+          magSize: 1,
+          reloading: CN.cd > 0,
+          intermissionTime: this.waves.state === 'intermission' ? this.waves.timer : null,
+        });
+        this.renderer.render(this.scene, this.camera);
+        return;
+      }
+    }
+
+    // --- E: man a captured cannon, else dismount / remount ---
     const eDown = this.input.isDown('KeyE');
     if (eDown && !this._eWasDown) {
-      const result = this.player.toggleMount();
-      if (result === 'dismounted') this.ui.showBanner('ON FOOT — E NEAR HORSE TO MOUNT', 1.6);
-      else if (result === 'mounted') this.ui.showBanner('MOUNTED', 0.8);
-      else if (result === 'too far') this.ui.showBanner('YOUR HORSE IS ELSEWHERE', 1.2);
+      const freeGun = !this.player.mounted ? this._nearbyFreeCannon(3.4) : null;
+      if (freeGun) {
+        this.cannon = { piece: freeGun.piece, tip: freeGun.tip, cd: 0.6 };
+        this.ui.showBanner('CANNON MANNED — LMB FIRE · E STEP AWAY', 1.8);
+      } else {
+        const result = this.player.toggleMount();
+        if (result === 'dismounted') this.ui.showBanner('ON FOOT — E NEAR HORSE TO MOUNT', 1.6);
+        else if (result === 'mounted') this.ui.showBanner('MOUNTED', 0.8);
+        else if (result === 'too far') this.ui.showBanner('YOUR HORSE IS ELSEWHERE', 1.2);
+      }
     }
     this._eWasDown = eDown;
 

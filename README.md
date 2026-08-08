@@ -17,7 +17,7 @@ battlefield. Built with vanilla Three.js. Desktop browser + mouse required.
 | **R** | reload |
 | **Shift** | sprint |
 | **Space** | jump (mounted) |
-| **E** | dismount / remount your horse |
+| **E** | dismount / remount — or man a captured cannon (kill its crew first) |
 | **V** | camera: hip / far / first person |
 | **Scroll wheel** | zoom — all the way in enters first person |
 | **F** | saber strike |
