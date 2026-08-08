@@ -22,6 +22,7 @@ battlefield. Built with vanilla Three.js. Desktop browser + mouse required.
 | **Scroll wheel** | zoom — all the way in enters first person |
 | **F** | saber strike |
 | **U** | knife finisher (on foot, up close) |
+| **C** | free camera — fly anywhere while an AI patriot fights |
 | **G** | fullscreen |
 | **Ride into redcoats** | trample for an instant kill |
 | **Esc** | pause / release mouse |

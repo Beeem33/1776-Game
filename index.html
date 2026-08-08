@@ -5,6 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>1776</title>
   <link rel="stylesheet" href="./src/style.css" />
+  <style>
+    /* Opening-cinematic dressing: full black fade + letterbox bars */
+    #cine-fade {
+      position: fixed; inset: 0; background: #000; opacity: 0;
+      pointer-events: none; z-index: 60; transition: opacity 0.9s ease;
+    }
+    .cine-bar {
+      position: fixed; left: 0; right: 0; height: 11vh; background: #000;
+      pointer-events: none; z-index: 55; transition: transform 0.7s ease;
+    }
+    #cine-bar-top { top: 0; transform: translateY(-100%); }
+    #cine-bar-bottom { bottom: 0; transform: translateY(100%); }
+    .cine-bar.in { transform: translateY(0); }
+  </style>
   <!-- Runs with zero build tools: 'three' resolves via this import map.
        If you later install Node and run `npm install && npm run dev`,
        Vite resolves 'three' from node_modules instead and this map is ignored. -->
@@ -18,6 +32,11 @@
 </head>
 <body>
   <canvas id="game"></canvas>
+
+  <!-- Opening-cinematic dressing -->
+  <div id="cine-fade"></div>
+  <div id="cine-bar-top" class="cine-bar"></div>
+  <div id="cine-bar-bottom" class="cine-bar"></div>
 
   <!-- HUD -->
   <div id="hud" class="hidden">
@@ -74,6 +93,7 @@
         <div><span>SCROLL</span> zoom &middot; all the way in = first person</div>
         <div><span>F</span> saber strike</div>
         <div><span>U</span> knife finisher &middot; on foot, up close</div>
+        <div><span>C</span> free camera &middot; an AI patriot fights for you</div>
         <div><span>G</span> fullscreen &middot; locks the mouse to the game</div>
         <div><span>TRAMPLE</span> ride through redcoats for an instant kill</div>
         <div><span>ESC</span> pause / release mouse</div>
