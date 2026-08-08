@@ -6141,10 +6141,32 @@ class Game {
   _firePlayerCannon(CN) {
     const from = new THREE.Vector3();
     CN.tip.getWorldPosition(from);
+
+    // The shell lands ON the crosshair: march the camera's center ray out
+    // to where it meets the ground, then ballistically solve the arc to
+    // exactly that spot — point, shoot, boom. No guesswork.
     const dir = new THREE.Vector3();
     this.camera.getWorldDirection(dir);
-    dir.y = Math.max(dir.y, -0.05) + 0.08; // a touch of elevation
-    dir.normalize();
+    const probe = this.camera.position.clone();
+    let target = null;
+    for (let i = 0; i < 150; i++) {
+      probe.addScaledVector(dir, 2);
+      if (probe.y <= terrainHeight(probe.x, probe.z)) {
+        target = probe.clone();
+        target.y = terrainHeight(target.x, target.z);
+        break;
+      }
+    }
+    if (!target) {
+      target = this.camera.position.clone().addScaledVector(dir, 220);
+      target.y = terrainHeight(target.x, target.z);
+    }
+
+    const g = 26;
+    const dist = from.distanceTo(target);
+    const T = THREE.MathUtils.clamp(dist / 55, 0.4, 1.9); // fast, flat arc
+    const vel = target.clone().sub(from).divideScalar(T);
+    vel.y = (target.y - from.y + 0.5 * g * T * T) / T;
 
     const mesh = new THREE.Mesh(
       new THREE.SphereGeometry(0.26, 8, 8),
@@ -6154,7 +6176,7 @@ class Game {
     mesh.position.copy(from);
     this.scene.add(mesh);
     this.shells.push({
-      mesh, vel: dir.multiplyScalar(36), g: 11,
+      mesh, vel, g,
       smokeT: 0, whistled: true, big: true, noSelf: true,
     });
 
@@ -6583,8 +6605,13 @@ class Game {
         const ph = cycle - i;
         if (i < F.stabs) {
           P.armR.rotation.x = kf(ph, [[0, -2.0], [0.4, -0.55], [0.55, -0.65], [1, -2.0]]);
-          P.armR.rotation.z = kf(ph, [[0, 0], [0.4, 0.6], [0.6, 0.5], [1, 0]]);
-          P.armR.rotation.y = kf(ph, [[0, 0], [0.4, -0.3], [1, 0]]);
+          P.armR.rotation.z = kf(ph, [[0, 0], [0.4, 0.35], [0.6, 0.3], [1, 0]]);
+          P.armR.rotation.y = kf(ph, [[0, 0], [0.4, -0.25], [1, 0]]);
+          // The whole arm drives across and down so the blade buries in
+          // the MIDDLE of his chest, not the air beside his shoulder
+          P.armR.position.x = kf(ph, [[0, 0.4], [0.4, 0.05], [0.6, 0.05], [1, 0.4]]);
+          P.armR.position.y = kf(ph, [[0, 0.82], [0.4, 0.58], [0.6, 0.58], [1, 0.82]]);
+          P.armR.position.z = kf(ph, [[0, 0.05], [0.4, 0.34], [0.6, 0.3], [1, 0.05]]);
           if (ph >= 0.4 && F.stabsDone <= i) {
             F.stabsDone = i + 1;
             // Blood squirts from the chest with every thrust
@@ -6628,6 +6655,7 @@ class Game {
     P.knife.visible = false;
     P.uziGroup.visible = true;
     P.armR.rotation.set(0, 0, 0);
+    P.armR.position.set(0.4, 0.82, 0.05); // back on the shoulder
     P.armL.rotation.x = P._armLBase.x;
     P.armL.rotation.z = P._armLBase.z;
     P.riderUpper.rotation.x = 0;
@@ -6828,7 +6856,7 @@ class Game {
         let dyaw = aimYaw - CN.piece.rotation.y;
         while (dyaw > Math.PI) dyaw -= Math.PI * 2;
         while (dyaw < -Math.PI) dyaw += Math.PI * 2;
-        CN.piece.rotation.y += dyaw * Math.min(1, 4 * dt);
+        CN.piece.rotation.y += dyaw * Math.min(1, 9 * dt);
 
         // Gunner stands planted at the trail
         P.velocity.set(0, 0, 0);
@@ -6840,7 +6868,7 @@ class Game {
         P.heading = CN.piece.rotation.y;
         P.group.rotation.y = P.heading;
 
-        this.camCtrl.bodyLift = -1.0;
+        this.camCtrl.bodyLift = 0.3; // ride high enough to see over the piece
         P.eyeAnchor.getWorldPosition(this._eyePos);
         this.camCtrl.update(dt, P.position, this.input.consumeMouseDelta(), this._eyePos);
         this.input.consumeWheel();
