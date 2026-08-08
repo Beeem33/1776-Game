@@ -353,6 +353,11 @@ html, body {
 
   <canvas id="game"></canvas>
 
+  <!-- Opening-cinematic dressing -->
+  <div id="cine-fade"></div>
+  <div id="cine-bar-top" class="cine-bar"></div>
+  <div id="cine-bar-bottom" class="cine-bar"></div>
+
   <!-- HUD -->
   <div id="hud" class="hidden">
     <div id="crosshair">
@@ -408,6 +413,7 @@ html, body {
         <div><span>SCROLL</span> zoom &middot; all the way in = first person</div>
         <div><span>F</span> saber strike</div>
         <div><span>U</span> knife finisher &middot; on foot, up close</div>
+        <div><span>C</span> free camera &middot; an AI patriot fights for you</div>
         <div><span>G</span> fullscreen &middot; locks the mouse to the game</div>
         <div><span>TRAMPLE</span> ride through redcoats for an instant kill</div>
         <div><span>ESC</span> pause / release mouse</div>
@@ -5539,6 +5545,13 @@ class Game {
     this._eyePos = new THREE.Vector3();
     this.shells = []; // mortar/cannon shells in flight
     this._eWasDown = false;
+    this._cWasDown = false;
+    this.freeCam = null;  // set = flying spectator cam, AI runs the patriot
+    this._ai = null;
+    this.intro = null;    // set = opening cinematic is playing
+    this._cineFade = document.getElementById('cine-fade');
+    this._cineTop = document.getElementById('cine-bar-top');
+    this._cineBottom = document.getElementById('cine-bar-bottom');
 
     this._bindEvents();
     this.ui.showScreen('start');
@@ -5614,9 +5627,12 @@ class Game {
       if (locked) {
         this._noLockMode = false; // real lock acquired — center the crosshair
         if (this.state === 'menu' || this.state === 'paused') {
-          if (this.waves.state === 'idle') this.waves.start();
-          this.state = 'playing';
-          this.ui.showScreen('game');
+          if (this.waves.state === 'idle') {
+            this._startIntro(); // fresh run: cinematic opening
+          } else {
+            this.state = 'playing';
+            this.ui.showScreen('game');
+          }
           this.clock.getDelta(); // discard time spent in menus
         }
       } else {
@@ -5637,9 +5653,11 @@ class Game {
     window.addEventListener('pagehide', () => this.audio.setSuspended(true));
   }
 
-  // Sound runs only while actively playing with the game on screen
+  // Sound runs only while actively playing (or in the opening cinematic)
+  // with the game on screen
   _syncAudio() {
-    const active = this.state === 'playing' && !document.hidden;
+    const active =
+      (this.state === 'playing' || this.state === 'intro') && !document.hidden;
     this.audio.setSuspended(!active);
   }
 
@@ -5649,9 +5667,12 @@ class Game {
     if (this.state === 'playing') return;
     this._noLockMode = true;
     this.input.pointerLocked = true; // treat mouse as captured
-    if (this.waves.state === 'idle') this.waves.start();
-    this.state = 'playing';
-    this.ui.showScreen('game');
+    if (this.waves.state === 'idle') {
+      this._startIntro();
+    } else {
+      this.state = 'playing';
+      this.ui.showScreen('game');
+    }
     this.clock.getDelta();
     this._syncAudio();
   }
@@ -5846,6 +5867,266 @@ class Game {
     }
   }
 
+  // ---------------- free camera + AI patriot ----------------
+  // C detaches you from the patriot: fly anywhere with WASD/mouse (Space
+  // up, Ctrl down, Shift fast) while a competent AI keeps him fighting —
+  // riding, strafing, burst-firing, reloading. C again takes command back.
+
+  _enterFreeCam() {
+    if (this.camCtrl.view.fp) this.player.setFirstPerson(false, this.camera);
+    this.freeCam = {
+      pos: this.camera.position.clone(),
+      yaw: this.camCtrl.yaw,
+      pitch: this.camCtrl.pitch,
+    };
+    this._ai = { fireT: 0, burstT: 0, ammo: 25, reloadT: null, strafeDir: 1, strafeT: 4 };
+    this.player.aiming = false;
+    this.ui.showBanner('FREE CAMERA — C TO TAKE BACK COMMAND', 1.8);
+  }
+
+  _exitFreeCam() {
+    this.freeCam = null;
+    this._ai = null;
+    this.player.setReloadT(null);
+    this.player.setFirstPerson(this.camCtrl.view.fp, this.camera);
+    this.ui.showBanner('BACK IN COMMAND', 0.9);
+  }
+
+  _updateFreeCam(dt) {
+    const FC = this.freeCam;
+    const md = this.input.consumeMouseDelta();
+    FC.yaw -= md.x * 0.0023;
+    FC.pitch = THREE.MathUtils.clamp(FC.pitch + md.y * 0.0023, -1.5, 1.5);
+    const cp = Math.cos(FC.pitch);
+    const dir = new THREE.Vector3(-Math.sin(FC.yaw) * cp, -Math.sin(FC.pitch), -Math.cos(FC.yaw) * cp);
+    const right = new THREE.Vector3(Math.cos(FC.yaw), 0, -Math.sin(FC.yaw));
+    const fast = this.input.isDown('ShiftLeft') || this.input.isDown('ShiftRight');
+    const move = new THREE.Vector3();
+    if (this.input.isDown('KeyW')) move.add(dir);
+    if (this.input.isDown('KeyS')) move.sub(dir);
+    if (this.input.isDown('KeyD')) move.add(right);
+    if (this.input.isDown('KeyA')) move.sub(right);
+    if (this.input.isDown('Space')) move.y += 1;
+    if (this.input.isDown('ControlLeft')) move.y -= 1;
+    if (move.lengthSq() > 0) FC.pos.addScaledVector(move.normalize(), (fast ? 42 : 16) * dt);
+    FC.pos.y = Math.max(FC.pos.y, terrainHeight(FC.pos.x, FC.pos.z) + 0.5);
+    this.camera.position.copy(FC.pos);
+    this.camera.lookAt(FC.pos.clone().add(dir));
+    this.input.consumeWheel();
+  }
+
+  _updateAiPatriot(dt) {
+    const P = this.player;
+    const ai = this._ai;
+
+    // Nearest living redcoat is the mark
+    let target = null;
+    let best = Infinity;
+    for (const e of this.waves.enemies) {
+      if (e.dead || e.dying || e.inFinisher) continue;
+      const d = Math.hypot(e.group.position.x - P.position.x, e.group.position.z - P.position.z);
+      if (d < best) { best = d; target = e; }
+    }
+
+    // Movement: advance when far, back off when crowded, otherwise circle
+    // the mark like a cavalry skirmisher (flipping direction now and then)
+    let moveDir = null;
+    if (target) {
+      const to = new THREE.Vector3().subVectors(target.group.position, P.position);
+      to.y = 0;
+      const d = to.length();
+      to.normalize();
+      ai.strafeT -= dt;
+      if (ai.strafeT <= 0) { ai.strafeT = 3 + Math.random() * 3; ai.strafeDir *= -1; }
+      const side = new THREE.Vector3(-to.z, 0, to.x).multiplyScalar(ai.strafeDir);
+      if (d > 45) moveDir = to.clone();
+      else if (d < 16) moveDir = to.clone().negate().addScaledVector(side, 0.6).normalize();
+      else moveDir = side.addScaledVector(to, 0.15).normalize();
+    }
+
+    // Drive the real player through a synthetic camera/input pair so all
+    // the normal physics, animation and audio behavior falls out for free
+    const aimYaw = target
+      ? Math.atan2(target.group.position.x - P.position.x, target.group.position.z - P.position.z)
+      : P.heading;
+    const fakeCam = {
+      yaw: aimYaw - Math.PI, // rider's upper body tracks the mark
+      getGroundForward: () => (moveDir ? moveDir.clone() : new THREE.Vector3(0, 0, 1)),
+      getGroundRight: () => new THREE.Vector3(),
+    };
+    const keys = new Set();
+    if (moveDir) keys.add('KeyW');
+    if (target && best > 55) keys.add('ShiftLeft'); // sprint to close distance
+    P.aiming = false;
+    P.update(dt, { isDown: (c) => keys.has(c) }, fakeCam);
+
+    // Trigger discipline: bursts at anything inside 65 m, honest reloads
+    if (ai.reloadT != null) {
+      ai.reloadT += dt / 1.9;
+      P.setReloadT(Math.min(ai.reloadT, 1));
+      if (ai.reloadT >= 1) {
+        ai.reloadT = null;
+        ai.ammo = 25;
+        P.setReloadT(null);
+      }
+      return;
+    }
+    if (!target || best >= 65) return;
+
+    ai.burstT += dt;
+    const inBurst = (ai.burstT % 1.1) < 0.6;
+    ai.fireT -= dt;
+    if (inBurst && ai.fireT <= 0) {
+      ai.fireT = 60 / 450;
+      ai.ammo -= 1;
+      P.kick();
+      this.audio.playSfx('uzi', { volume: 0.4, rateJitter: 0.07 });
+      const from = new THREE.Vector3();
+      P.muzzle.getWorldPosition(from);
+      const at = target.group.position.clone();
+      at.y += 1.3 + (Math.random() - 0.5) * 0.5;
+      at.x += (Math.random() - 0.5) * 1.2;
+      at.z += (Math.random() - 0.5) * 1.2;
+      this.particles.tracer(from, at);
+      if (Math.random() < 0.62) {
+        const impulse = at.clone().sub(from).setY(0).normalize().multiplyScalar(12);
+        const killed = target.takeDamage(20, impulse);
+        this.particles.blood(at, killed);
+        if (killed) this.waves.onKill();
+      }
+      if (ai.ammo <= 0) {
+        ai.reloadT = 0;
+        this.audio.playSfx('reload', { volume: 0.7 });
+      }
+    }
+  }
+
+  // ---------------- the opening cinematic ----------------
+  // Two seconds of black, then ~7 letterboxed seconds: the patriot walking
+  // slowly through the wet grass toward his waiting horse, calmly seating
+  // a fresh magazine — low tracking shots — before the reins are yours.
+  // Space or the trigger skips it.
+
+  _startIntro() {
+    this.state = 'intro';
+    this.ui.showScreen('game');
+    this.ui.hud.classList.add('hidden'); // no HUD during the movie
+    this._cineFade.style.transition = 'none';
+    this._cineFade.style.opacity = '1';
+    void this._cineFade.offsetHeight; // commit the instant blackout
+    this._cineFade.style.transition = 'opacity 0.9s ease';
+    this._cineTop.classList.add('in');
+    this._cineBottom.classList.add('in');
+
+    const P = this.player;
+    if (P.mounted) P.toggleMount(); // horse waits ahead; the man walks to it
+    const heading = Math.PI / 5;
+    if (P._parked) P._parked.heading = heading;
+    const walkDir = new THREE.Vector3(Math.sin(heading), 0, Math.cos(heading));
+    const horse = P.meshRoot.position.clone();
+    P.group.position.set(horse.x - walkDir.x * 11, 0, horse.z - walkDir.z * 11);
+    P.group.position.y = terrainHeight(P.group.position.x, P.group.position.z);
+    P.heading = heading;
+    P.group.rotation.y = heading;
+    P.riderUpper.rotation.y = 0;
+    P.velocity.set(0, 0, 0);
+
+    this.intro = { t: 0, walkDir, horse, reloadSfx: false };
+    this._syncAudio();
+  }
+
+  _updateIntro(dt) {
+    const I = this.intro;
+    const P = this.player;
+    I.t += dt;
+    const t = I.t;
+
+    // Space or the trigger skips, once the black has lifted
+    if (t > 2.4 && (this.input.isDown('Space') || this.input.fireHeld)) {
+      this._endIntro();
+      return;
+    }
+
+    if (t >= 2 && this._cineFade.style.opacity !== '0') this._cineFade.style.opacity = '0';
+
+    // The slow walk toward the waiting horse
+    const toHorse = new THREE.Vector3().subVectors(I.horse, P.group.position);
+    toHorse.y = 0;
+    if (t >= 2 && toHorse.length() > 1.7) {
+      P.group.position.addScaledVector(I.walkDir, 1.35 * dt);
+      P.group.position.y = terrainHeight(P.group.position.x, P.group.position.z);
+      P._footPhase += dt * 3.6;
+      const swing = Math.sin(P._footPhase) * 0.5;
+      P.footLegs[0].rotation.x = swing;
+      P.footLegs[1].rotation.x = -swing;
+      P.footRoot.position.y = Math.abs(Math.sin(P._footPhase)) * 0.04;
+    } else {
+      P.footLegs[0].rotation.x *= 1 - Math.min(1, 8 * dt);
+      P.footLegs[1].rotation.x *= 1 - Math.min(1, 8 * dt);
+    }
+
+    // He seats a fresh magazine — slow, unhurried, inevitable
+    if (t >= 3 && !I.reloadSfx) {
+      I.reloadSfx = true;
+      this.audio.playSfx('reload', { volume: 0.75, rate: 0.5 });
+    }
+    if (t >= 3 && t < 7.2) P.setReloadT(Math.min((t - 3) / 4, 0.999));
+    else P.setReloadT(null);
+    P._applyReloadPose();
+
+    // Two long, low letterboxed shots
+    const base = P.group.position.clone();
+    const right = new THREE.Vector3(I.walkDir.z, 0, -I.walkDir.x);
+    if (t < 5.6) {
+      // Shot 1 — tracking alongside at chest height, drifting with him
+      const cam = base.clone()
+        .addScaledVector(right, 3.1)
+        .addScaledVector(I.walkDir, -0.6 + t * 0.12);
+      cam.y = terrainHeight(cam.x, cam.z) + 1.15;
+      this.camera.position.copy(cam);
+      const look = base.clone().addScaledVector(I.walkDir, 0.8);
+      look.y += 1.3;
+      this.camera.lookAt(look);
+    } else {
+      // Shot 2 — low front angle, slowly pulling back as he closes in
+      const pull = 4.4 - (t - 5.6) * 0.25;
+      const cam = base.clone()
+        .addScaledVector(I.walkDir, pull)
+        .addScaledVector(right, -1.2);
+      cam.y = terrainHeight(cam.x, cam.z) + 0.95;
+      this.camera.position.copy(cam);
+      const look = base.clone();
+      look.y += 1.45;
+      this.camera.lookAt(look);
+    }
+
+    this.input.consumeMouseDelta();
+    this.input.consumeWheel();
+
+    if (t >= 9.2) this._endIntro();
+  }
+
+  _endIntro() {
+    const P = this.player;
+    this.intro = null;
+    P.setReloadT(null);
+    P._applyReloadPose();
+    // Swing into the saddle and take the reins
+    P.group.position.copy(P.meshRoot.position);
+    P.toggleMount();
+    this.state = 'playing';
+    this.ui.showScreen('game');
+    this._cineFade.style.opacity = '0';
+    this._cineTop.classList.remove('in');
+    this._cineBottom.classList.remove('in');
+    this.camCtrl.yaw = P.heading + Math.PI;
+    this.camCtrl.pitch = 0.22;
+    this.camCtrl._initialized = false; // snap cleanly in behind the rider
+    this.waves.start();
+    this.clock.getDelta();
+    this._syncAudio();
+  }
+
   // ---------------- the knife finisher ----------------
   // U near a redcoat on foot: the camera pulls back and slowly orbits, the
   // patriot wrenches him into a headlock (musket clatters away, he thrashes
@@ -6035,6 +6316,15 @@ class Game {
       this.player.knife.visible = false;
       this.player.uziGroup.visible = true;
     }
+    this.freeCam = null;
+    this._ai = null;
+    if (this.intro) {
+      this.intro = null;
+      this.player.setReloadT(null);
+    }
+    this._cineFade.style.opacity = '0';
+    this._cineTop.classList.remove('in');
+    this._cineBottom.classList.remove('in');
     for (const s of this.shells) {
       this.scene.remove(s.mesh);
       s.mesh.geometry.dispose();
@@ -6080,7 +6370,7 @@ class Game {
       }
     }
 
-    if (this.state !== 'playing') {
+    if (this.state !== 'playing' && this.state !== 'intro') {
       // Cinematic menu camera: a slow aerial orbit well above the field
       // (paused keeps the last gameplay framing instead)
       if (this.state === 'menu' || this.state === 'dead') {
@@ -6090,6 +6380,13 @@ class Game {
         this.camera.position.set(mx, Math.max(terrainHeight(mx, mz) + 9, 11), mz);
         this.camera.lookAt(0, terrainHeight(0, 0) + 3, 0);
       }
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
+
+    // --- opening cinematic owns the camera and the patriot ---
+    if (this.state === 'intro') {
+      this._updateIntro(dt);
       this.renderer.render(this.scene, this.camera);
       return;
     }
@@ -6124,6 +6421,57 @@ class Game {
         ammo: this.weapon.ammo,
         magSize: this.weapon.magSize,
         reloading: this.weapon.reloading,
+        intermissionTime: this.waves.state === 'intermission' ? this.waves.timer : null,
+      });
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
+
+    // --- C: free camera — fly the battlefield while an AI patriot fights ---
+    const cDown = this.input.isDown('KeyC');
+    if (cDown && !this._cWasDown) {
+      if (this.freeCam) this._exitFreeCam();
+      else this._enterFreeCam();
+    }
+    this._cWasDown = cDown;
+
+    if (this.freeCam) {
+      this._updateFreeCam(dt);
+      // Weapon idles (tracer/flash/heat fade); the AI does its own shooting
+      this.weapon.update(dt, false, this.player, [], () => {}, this.camCtrl, false);
+      this._updateAiPatriot(dt);
+      this.audio.updateGallop(dt, this.player.speedRatio);
+
+      const events = [];
+      this.waves.update(dt, this.player.position, events);
+      for (const ev of events) {
+        if (ev.type === 'mortarFire' || ev.type === 'cannonFire') {
+          this._launchShell(ev);
+          continue;
+        }
+        this.player.takeDamage(ev.damage);
+        this.ui.flashDamage();
+        this.audio.playSfx('hurt', { volume: 0.5, rateJitter: 0.1 });
+      }
+      this._updateShells(dt);
+
+      if (this.player.hp <= 0) {
+        this._exitFreeCam();
+        this._die();
+        return;
+      }
+
+      this.ui.update(dt, {
+        wave: this.waves.wave,
+        aliveCount: this.waves.aliveCount,
+        kills: this.waves.kills,
+        hp: this.player.hp,
+        maxHp: this.player.maxHp,
+        heat: this.weapon.heat,
+        overheated: false,
+        ammo: this._ai.ammo,
+        magSize: 25,
+        reloading: this._ai.reloadT != null,
         intermissionTime: this.waves.state === 'intermission' ? this.waves.timer : null,
       });
       this.renderer.render(this.scene, this.camera);
