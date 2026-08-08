@@ -394,21 +394,19 @@ html, body {
     <div class="overlay-inner">
       <h1 class="title">1776</h1>
       <p class="subtitle">THE MIDNIGHT RIDE. THE UZI. THE RECKONING.</p>
-      <div class="vehicle-choice">
-        <button id="pick-horse" class="vbtn selected">&#127905; WHITE CHARGER</button>
-        <button id="pick-tank" class="vbtn">&#128739; LIGHT TANK</button>
-      </div>
-      <div class="vehicle-hint">Tank: cannon on a 3s cooldown &middot; heavier waves &middot; the redcoats hit harder</div>
       <div class="click-prompt">— CLICK TO RIDE —</div>
       <div class="controls">
         <div><span>W A S D</span> ride the horse</div>
         <div><span>MOUSE</span> look / aim</div>
         <div><span>LMB (HOLD)</span> fire uzi &middot; 600 RPM &middot; 32-round mags</div>
         <div><span>R</span> reload</div>
+        <div><span>SHIFT</span> sprint</div>
         <div><span>SPACE</span> jump (mounted)</div>
         <div><span>E</span> dismount / mount your horse</div>
         <div><span>V</span> camera view &middot; hip / far / first person</div>
-        <div><span>F</span> fullscreen &middot; locks the mouse to the game</div>
+        <div><span>SCROLL</span> zoom &middot; all the way in = first person</div>
+        <div><span>F</span> saber strike</div>
+        <div><span>G</span> fullscreen &middot; locks the mouse to the game</div>
         <div><span>TRAMPLE</span> ride through redcoats for an instant kill</div>
         <div><span>ESC</span> pause / release mouse</div>
       </div>
@@ -463,6 +461,13 @@ function sphereGeo(r, seg = 10) {
   return geoCache.get(key);
 }
 
+// Rounded-end limb segment: total height = len + 2r, oriented along Y
+function capGeo(r, len, seg = 10) {
+  const key = `p${r},${len},${seg}`;
+  if (!geoCache.has(key)) geoCache.set(key, new THREE.CapsuleGeometry(r, len, 4, seg));
+  return geoCache.get(key);
+}
+
 function mat(color, { roughness = 0.85, metalness = 0 } = {}) {
   const key = `${color},${roughness},${metalness}`;
   if (!matCache.has(key)) {
@@ -485,6 +490,12 @@ function cyl(rt, rb, h, color, opts, seg = 8) {
 
 function sphere(r, color, opts, seg = 10) {
   const m = new THREE.Mesh(sphereGeo(r, seg), mat(color, opts));
+  m.castShadow = true;
+  return m;
+}
+
+function capsule(r, len, color, opts, seg = 10) {
+  const m = new THREE.Mesh(capGeo(r, len, seg), mat(color, opts));
   m.castShadow = true;
   return m;
 }
@@ -807,7 +818,7 @@ function loadGeneratedGroundTexture(material) {
   };
   img.onerror = () => { /* keep the procedural texture */ };
   // Single-file builds embed the texture as a data URI (GROUND_B64)
-  img.src = (typeof GROUND_B64 !== 'undefined') ? GROUND_B64 : '/assets/ground_grass.png';
+  img.src = (typeof GROUND_B64 !== 'undefined') ? GROUND_B64 : './assets/ground_grass.png';
 }
 
 // Dense instanced grass covering the whole battlefield, swaying in the wind
@@ -1669,6 +1680,7 @@ class DebrisManager {
 
 // ===== src/systems/particles.js =====
 
+
 // Lightweight burst particle system. Each burst is one THREE.Points object
 // whose vertices fly apart, fall under gravity, and fade out.
 class Particles {
@@ -1870,7 +1882,12 @@ class Particles {
         arr[j] += vel[j] * dt;
         arr[j + 1] += vel[j + 1] * dt;
         arr[j + 2] += vel[j + 2] * dt;
-        if (arr[j + 1] < 0.05) arr[j + 1] = 0.05; // rest on the ground
+        // Rest on the REAL ground — falling blood/dirt follows crater bowls
+        // down instead of freezing at a flat height and floating mid-air
+        if (b.gravity > 0 && arr[j + 1] < 8) {
+          const floor = terrainHeight(arr[j], arr[j + 2]) + 0.05;
+          if (arr[j + 1] < floor) arr[j + 1] = floor;
+        }
       }
       pos.needsUpdate = true;
       b.points.material.opacity = b.life / b.maxLife;
@@ -1911,6 +1928,18 @@ class AudioManager {
     this.listener.setMasterVolume(muted ? 0 : 1);
   }
 
+  // Hard-stop for pause/tab-switch: suspending the AudioContext freezes the
+  // WebAudio clock, so EVERYTHING (loops, positional music, tails of one-shot
+  // SFX) goes silent instantly and resumes exactly where it left off.
+  setSuspended(suspended) {
+    if (!this.ctx) return;
+    if (suspended && this.ctx.state === 'running') {
+      this.ctx.suspend().catch(() => {});
+    } else if (!suspended && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
+  }
+
   // Must be called from a user gesture (the click that engages pointer lock).
   async init() {
     if (this.ready) return;
@@ -1938,7 +1967,7 @@ class AudioManager {
     // Optional: user-supplied track overrides the synth loop
     try {
       const loaded = await new Promise((resolve) => {
-        new THREE.AudioLoader().load('/enemy_music.mp3', resolve, undefined, () => resolve(null));
+        new THREE.AudioLoader().load('./enemy_music.mp3', resolve, undefined, () => resolve(null));
       });
       if (loaded) b.enemyMusic = loaded;
     } catch (e) { /* keep synth loop */ }
@@ -2314,12 +2343,17 @@ class Ragdoll {
       : new THREE.Vector3(0, 1, 0);
     this.vel = impulse.clone().multiplyScalar(1.05 + Math.random() * 0.35);
     this.vel.y = Math.min(this.vel.y, 2) + 1.2 + Math.random() * 1.2 + impulse.length() * 0.05;
+    // Sideways scatter so identical shots don't drop identical corpses
+    this.vel.addScaledVector(new THREE.Vector3(-dir.z, 0, dir.x), (Math.random() - 0.5) * 4);
 
     // Tumble around the axis perpendicular to the launch direction
     const tumbleAxis = new THREE.Vector3().crossVectors(UP, dir);
     if (tumbleAxis.lengthSq() < 0.01) tumbleAxis.set(1, 0, 0);
     tumbleAxis.normalize();
-    const spin = 4 + Math.random() * 5;
+    // Spin size AND direction vary: some men whip head-over-heels with the
+    // blow, some against it, some barely turn and simply crumple (the
+    // random-collapse pick at landing decides which way those fall)
+    const spin = (1 + Math.random() * 7.5) * (Math.random() < 0.6 ? 1 : -1);
     this.angVel = new THREE.Vector3(
       tumbleAxis.x * spin + (Math.random() - 0.5) * 3,
       (Math.random() - 0.5) * 4,
@@ -2391,6 +2425,40 @@ class Ragdoll {
           wander: Math.random() * 10,
         };
       });
+  }
+
+  // A nearby blast just reshaped the ground (fresh crater): wake the corpse
+  // so the body, severed limbs, dropped gun and blood pool all settle down
+  // onto the NEW terrain instead of floating over the hole. Pieces get a
+  // tiny pop so they visibly tumble and bleed down into the bowl.
+  wake() {
+    if (!this.grounded) return; // still flying — it will land on the new ground anyway
+    this.sleeping = false;
+    this.restTime = 0;
+    this.group.traverse((o) => { o.matrixAutoUpdate = true; });
+    this.rotVelX += (Math.random() - 0.5) * 0.8;
+    this.rotVelZ += (Math.random() - 0.5) * 0.8;
+    this._retargetLimbs(0.4);
+
+    for (const S of this.severed) {
+      S.resting = false;
+      S.obj.matrixAutoUpdate = true;
+      S.obj.traverse((o) => { o.matrixAutoUpdate = true; });
+      S.vel.set((Math.random() - 0.5) * 2, 1.2 + Math.random() * 1.6, (Math.random() - 0.5) * 2);
+      S.ang.set((Math.random() - 0.5) * 5, (Math.random() - 0.5) * 3, (Math.random() - 0.5) * 5);
+      S.bloodT = 0.15; // fresh drips as it slides down
+    }
+    if (this.gun && this.gun.resting) {
+      this.gun.resting = false;
+      this.gun.g.matrixAutoUpdate = true;
+      this.gun.g.traverse((o) => { o.matrixAutoUpdate = true; });
+      this.gun.vel.set((Math.random() - 0.5) * 1.2, 0.8, (Math.random() - 0.5) * 1.2);
+      this.gun.ang.set(0, 0, 0);
+    }
+    // The pool drops flush onto the new crater floor
+    if (this.pool) {
+      this.pool.position.y = terrainHeight(this.pool.position.x, this.pool.position.z) + 0.045;
+    }
   }
 
   _retargetLimbs(energy) {
@@ -2608,6 +2676,25 @@ class Ragdoll {
           // tumble — bodies land on sides, backs, faces, half-twisted
           this.lieX = Math.round(r.x / Math.PI) * Math.PI;
           this.lieZ = Math.round((r.z - Math.PI / 2) / Math.PI) * Math.PI + Math.PI / 2;
+          // A body that lands still nearly upright (bullet kills barely
+          // tumble) would ALWAYS round to the same keel — instead pick the
+          // collapse at random: face-plant, flat on the back, or crumpling
+          // to either side, with a shove of roll momentum to sell it
+          const baseX = Math.round(r.x / Math.PI) * Math.PI;
+          const baseZ = Math.round(r.z / Math.PI) * Math.PI;
+          if (Math.abs(r.x - baseX) < 0.6 && Math.abs(r.z - baseZ) < 0.6) {
+            if (Math.random() < 0.45) {
+              // Pitch over face-first or flat onto the back
+              this.lieX = baseX + (Math.random() < 0.5 ? 1 : -1) * (Math.PI / 2);
+              this.lieZ = baseZ;
+              this.rotVelX += (this.lieX > baseX ? 1.6 : -1.6) + (Math.random() - 0.5);
+            } else {
+              // Keel sideways — either side, never the same one every time
+              this.lieX = baseX;
+              this.lieZ = baseZ + (Math.random() < 0.5 ? 1 : -1) * (Math.PI / 2);
+              this.rotVelZ += (this.lieZ > baseZ ? 1.6 : -1.6) + (Math.random() - 0.5);
+            }
+          }
           this.rotVelX = this.angVel.x * 0.5;
           this.rotVelZ = this.angVel.z * 0.5;
           this._retargetLimbs(0.5);
@@ -2788,6 +2875,7 @@ class Player {
     this._buildHorse();
     this._buildRider();
     this._buildUzi();
+    this._buildFpRig();
     this._buildFootRig();
     this._buildSword();
 
@@ -2797,6 +2885,7 @@ class Player {
   dispose() {
     this.scene.remove(this.group);
     if (this._parked) this.scene.remove(this.meshRoot);
+    if (this.fpAnchor && this.fpAnchor.parent) this.fpAnchor.parent.remove(this.fpAnchor);
   }
 
   // ---------------- model ----------------
@@ -2807,51 +2896,60 @@ class Player {
     const coatDark = 0xc9c5bb;
     const mane = 0x9a958a;
 
-    // Body: chest + barrel + hindquarters for a shaped silhouette
-    const barrel = box(1.0, 1.0, 1.5, coat);
+    // Body: rounded barrel + spherical chest and hindquarters for a real
+    // equine silhouette instead of stacked crates
+    const barrel = cyl(0.52, 0.55, 1.5, coat, {}, 14);
+    barrel.rotation.x = Math.PI / 2;
+    barrel.scale.x = 0.94;
     barrel.position.set(0, 1.4, 0);
     this.meshRoot.add(barrel);
 
-    const chest = box(0.92, 1.05, 0.7, coat);
-    chest.position.set(0, 1.42, 0.95);
+    const chest = sphere(0.52, coat, {}, 12);
+    chest.scale.set(0.92, 1.02, 0.85);
+    chest.position.set(0, 1.42, 0.9);
     this.meshRoot.add(chest);
 
-    const rump = box(0.94, 0.95, 0.75, coatDark);
-    rump.position.set(0, 1.42, -0.95);
+    const rump = sphere(0.5, coatDark, {}, 12);
+    rump.scale.set(0.96, 0.96, 0.9);
+    rump.position.set(0, 1.42, -0.9);
     this.meshRoot.add(rump);
 
-    // Neck & head
-    const neck = box(0.45, 1.05, 0.55, coat);
-    neck.position.set(0, 2.05, 1.25);
-    neck.rotation.x = -0.5;
+    // Neck & head: tapered neck, rounded skull, conical snout
+    const neck = cyl(0.19, 0.33, 1.05, coat, {}, 12);
+    neck.position.set(0, 2.05, 1.22);
+    neck.rotation.x = 0.5;
     this.meshRoot.add(neck);
 
-    const skull = box(0.42, 0.48, 0.55, coat);
+    const skull = sphere(0.27, coat, {}, 12);
+    skull.scale.set(0.8, 0.9, 1.15);
     skull.position.set(0, 2.62, 1.62);
     this.meshRoot.add(skull);
 
-    const snout = box(0.3, 0.34, 0.5, coatDark);
-    snout.position.set(0, 2.5, 2.05);
+    const snout = cyl(0.13, 0.19, 0.5, coatDark, {}, 10);
+    snout.rotation.x = Math.PI / 2 + 0.15;
+    snout.position.set(0, 2.5, 2.0);
     this.meshRoot.add(snout);
 
     for (const side of [-1, 1]) {
-      const eye = box(0.07, 0.09, 0.07, 0x14100c);
-      eye.position.set(side * 0.22, 2.72, 1.72);
+      const eye = sphere(0.05, 0x14100c, {}, 8);
+      eye.position.set(side * 0.19, 2.72, 1.72);
       this.meshRoot.add(eye);
 
-      const ear = box(0.11, 0.28, 0.1, coatDark);
+      const ear = cyl(0.02, 0.07, 0.26, coatDark, {}, 6);
       ear.position.set(side * 0.14, 2.95, 1.42);
       ear.rotation.z = side * -0.15;
       this.meshRoot.add(ear);
     }
 
-    // Mane strip along the neck + tail
-    const maneStrip = box(0.16, 1.0, 0.4, mane);
-    maneStrip.position.set(0, 2.25, 1.08);
+    // Mane ridge along the neck + tail
+    const maneStrip = cyl(0.11, 0.11, 1.0, mane, {}, 8);
+    maneStrip.scale.z = 0.55;
+    maneStrip.position.set(0, 2.25, 1.05);
     maneStrip.rotation.x = -0.5;
     this.meshRoot.add(maneStrip);
 
-    const forelock = box(0.18, 0.2, 0.3, mane);
+    const forelock = sphere(0.13, mane, {}, 8);
+    forelock.scale.set(0.8, 0.9, 1.2);
     forelock.position.set(0, 2.88, 1.55);
     this.meshRoot.add(forelock);
 
@@ -2880,7 +2978,7 @@ class Player {
       cannon.position.y = -0.75;
       pivot.add(cannon);
 
-      const hoof = box(0.2, 0.14, 0.22, 0x1c1813);
+      const hoof = cyl(0.1, 0.12, 0.14, 0x1c1813, {}, 8);
       hoof.position.y = -1.02;
       pivot.add(hoof);
 
@@ -2977,20 +3075,21 @@ class Player {
     this.mountedLegs = new THREE.Group();
     this.meshRoot.add(this.mountedLegs);
     for (const side of [-1, 1]) {
-      const thigh = box(0.24, 0.28, 0.55, buff);
+      const thigh = capsule(0.12, 0.4, buff, {}, 10);
       thigh.position.set(side * 0.5, 2.08, 0.05);
-      thigh.rotation.z = side * 0.35;
+      thigh.rotation.z = side * 1.15;
       this.mountedLegs.add(thigh);
 
-      const shin = box(0.18, 0.5, 0.22, 0x2a2119);
+      const shin = capsule(0.09, 0.36, 0x2a2119, {}, 10);
       shin.position.set(side * 0.66, 1.72, 0.08);
       this.mountedLegs.add(shin);
 
-      const bootCuff = box(0.21, 0.12, 0.25, 0x3a2e20);
+      const bootCuff = cyl(0.105, 0.105, 0.12, 0x3a2e20, {}, 10);
       bootCuff.position.set(side * 0.66, 1.99, 0.08);
       this.mountedLegs.add(bootCuff);
 
-      const foot = box(0.16, 0.1, 0.34, 0x201a12);
+      const foot = sphere(0.1, 0x201a12, {}, 8);
+      foot.scale.set(0.9, 0.55, 1.8);
       foot.position.set(side * 0.66, 1.46, 0.14);
       this.mountedLegs.add(foot);
     }
@@ -3000,28 +3099,32 @@ class Player {
     this.riderUpper.position.set(0, 2.2, 0);
     this.meshRoot.add(this.riderUpper);
 
-    const torso = box(0.6, 0.85, 0.4, coatBlue);
+    // Elliptical coat barrel instead of a box torso
+    const torso = cyl(0.3, 0.34, 0.85, coatBlue, {}, 12);
+    torso.scale.z = 0.68;
     torso.position.y = 0.5;
     this.riderUpper.add(torso);
 
     // White facing panel + buttons down the chest
-    const facing = box(0.3, 0.75, 0.05, buff);
-    facing.position.set(0, 0.5, 0.21);
+    const facing = box(0.26, 0.68, 0.05, buff);
+    facing.position.set(0, 0.5, 0.19);
     this.riderUpper.add(facing);
 
     for (let i = 0; i < 4; i++) {
-      const btn = box(0.05, 0.05, 0.03, gold);
-      btn.position.set(0.1, 0.24 + i * 0.18, 0.24);
+      const btn = sphere(0.028, gold, { roughness: 0.4, metalness: 0.7 }, 6);
+      btn.position.set(0.1, 0.24 + i * 0.18, 0.22);
       this.riderUpper.add(btn);
     }
 
-    // Epaulettes + collar
+    // Rounded epaulettes + collar
     for (const side of [-1, 1]) {
-      const ep = box(0.2, 0.06, 0.3, gold);
-      ep.position.set(side * 0.34, 0.94, 0.02);
+      const ep = cyl(0.09, 0.09, 0.22, gold, {}, 8);
+      ep.rotation.z = Math.PI / 2;
+      ep.position.set(side * 0.32, 0.94, 0.02);
       this.riderUpper.add(ep);
     }
-    const collar = box(0.44, 0.14, 0.34, coatBlueDark);
+    const collar = cyl(0.2, 0.23, 0.14, coatBlueDark, {}, 10);
+    collar.scale.z = 0.8;
     collar.position.y = 0.96;
     this.riderUpper.add(collar);
 
@@ -3031,26 +3134,34 @@ class Player {
     tails.rotation.x = 0.35;
     this.riderUpper.add(tails);
 
-    // Head: face, eyes, nose, hair
-    const head = box(0.38, 0.4, 0.36, skin);
+    // Head: rounded face with a neck, eyes, nose, hair cap
+    const neckJoint = cyl(0.09, 0.11, 0.16, skin, {}, 8);
+    neckJoint.position.y = 1.0;
+    this.riderUpper.add(neckJoint);
+
+    const head = sphere(0.22, skin, {}, 14);
+    head.scale.set(0.9, 1.06, 0.94);
     head.position.y = 1.24;
     this.riderUpper.add(head);
 
     for (const side of [-1, 1]) {
-      const eye = box(0.06, 0.05, 0.03, 0x1a140e);
-      eye.position.set(side * 0.09, 1.29, 0.185);
+      const eye = sphere(0.032, 0x1a140e, {}, 6);
+      eye.position.set(side * 0.08, 1.29, 0.18);
       this.riderUpper.add(eye);
     }
-    const nose = box(0.07, 0.1, 0.06, 0xcf9662);
-    nose.position.set(0, 1.2, 0.2);
+    const nose = sphere(0.05, 0xcf9662, {}, 8);
+    nose.scale.set(0.8, 1.25, 0.9);
+    nose.position.set(0, 1.21, 0.2);
     this.riderUpper.add(nose);
 
-    const hair = box(0.4, 0.18, 0.38, 0x4a3018);
-    hair.position.set(0, 1.44, -0.02);
+    const hair = sphere(0.22, 0x4a3018, {}, 12);
+    hair.scale.set(0.96, 0.7, 1.0);
+    hair.position.set(0, 1.4, -0.03);
     this.riderUpper.add(hair);
 
-    const queue = box(0.08, 0.26, 0.08, 0x4a3018); // colonial ponytail
+    const queue = cyl(0.045, 0.03, 0.28, 0x4a3018, {}, 6); // colonial ponytail
     queue.position.set(0, 1.24, -0.22);
+    queue.rotation.x = 0.25;
     this.riderUpper.add(queue);
 
     // Tricorn hat: triangular brim + crown + cockade
@@ -3078,16 +3189,19 @@ class Player {
     sash.rotation.z = 0.6;
     this.riderUpper.add(sash);
 
-    // Left arm forward holding the reins (reaches for the mag during reloads)
-    this.armL = box(0.17, 0.5, 0.17, coatBlue);
-    this.armL.position.set(-0.38, 0.62, 0.16);
-    this._armLBase = { x: -1.0, z: -0.3 };
-    this.armL.rotation.x = this._armLBase.x;
-    this.armL.rotation.z = this._armLBase.z;
+    // Left arm reaches across the chest to support the uzi's mag well —
+    // a proper two-handed grip (it lets go to work the mag during reloads)
+    this.armL = capsule(0.085, 0.52, coatBlue, {}, 10);
+    this.armL.position.set(0.02, 0.8, 0.28);
+    this.armL.quaternion.setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0),
+      new THREE.Vector3(0.64, -0.22, 0.48).normalize()
+    );
+    this._armLBase = { x: this.armL.rotation.x, z: this.armL.rotation.z };
     this.riderUpper.add(this.armL);
 
-    const handL = box(0.12, 0.12, 0.12, skin);
-    handL.position.set(-0.44, 0.62, 0.42);
+    const handL = sphere(0.08, skin, {}, 8);
+    handL.position.set(0.34, 0.64, 0.5);
     this.riderUpper.add(handL);
 
     // Right arm — parented into a group so it follows the gun during reload
@@ -3095,17 +3209,17 @@ class Player {
     this.armR.position.set(0.4, 0.82, 0.05);
     this.riderUpper.add(this.armR);
 
-    const upperArmR = box(0.17, 0.42, 0.17, coatBlue);
+    const upperArmR = capsule(0.085, 0.3, coatBlue, {}, 10);
     upperArmR.position.set(0.02, -0.1, 0.12);
     upperArmR.rotation.x = -1.15;
     this.armR.add(upperArmR);
 
-    const cuffR = box(0.19, 0.12, 0.19, buff);
+    const cuffR = cyl(0.095, 0.095, 0.12, buff, {}, 10);
     cuffR.position.set(0.02, -0.02, 0.3);
     cuffR.rotation.x = -1.15;
     this.armR.add(cuffR);
 
-    const handR = box(0.12, 0.12, 0.12, skin);
+    const handR = sphere(0.075, skin, {}, 8);
     handR.position.set(0.02, 0.02, 0.42);
     this.armR.add(handR);
   }
@@ -3197,6 +3311,56 @@ class Player {
     this.uziGroup.add(this.muzzle);
   }
 
+  // Camera-attached first-person rig (Call-of-Duty style): in first person
+  // the REAL uzi group is re-parented onto this anchor, so recoil kick and
+  // the whole reload animation carry over 1:1. The gun sits low-right in
+  // frame with both sleeved arms reaching in from the bottom of the screen.
+  _buildFpRig() {
+    const coatBlue = 0x24408f;
+    const skin = 0xd9a06b;
+    const buff = 0xd8cfb4;
+
+    this.fpAnchor = new THREE.Group();
+    this.fpAnchor.rotation.y = Math.PI; // rig +Z = camera forward
+    this.fpAnchor.position.set(0.32, -0.36, -0.38);
+    this.fpAnchor.scale.setScalar(1.3);
+    this.fpAnchor.visible = false;
+
+    // Right forearm rises from the bottom-right to the pistol grip
+    const foreR = capsule(0.09, 0.42, coatBlue, {}, 10);
+    foreR.position.set(0.1, -0.36, 0.2);
+    foreR.quaternion.setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0), new THREE.Vector3(-0.15, 0.5, 0.6).normalize()
+    );
+    this.fpAnchor.add(foreR);
+
+    const cuffR = cyl(0.1, 0.1, 0.12, buff, {}, 10);
+    cuffR.position.set(0.15, -0.54, 0.02);
+    cuffR.quaternion.copy(foreR.quaternion);
+    this.fpAnchor.add(cuffR);
+
+    const handR = sphere(0.085, skin, {}, 10);
+    handR.position.set(0.03, -0.14, 0.47);
+    this.fpAnchor.add(handR);
+
+    // Left forearm crosses in from the lower left to cradle the mag well
+    const foreL = capsule(0.09, 0.46, coatBlue, {}, 10);
+    foreL.position.set(-0.19, -0.46, 0.24);
+    foreL.quaternion.setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0), new THREE.Vector3(0.34, 0.34, 0.5).normalize()
+    );
+    this.fpAnchor.add(foreL);
+
+    const cuffL = cyl(0.1, 0.1, 0.12, buff, {}, 10);
+    cuffL.position.set(-0.33, -0.6, 0.04);
+    cuffL.quaternion.copy(foreL.quaternion);
+    this.fpAnchor.add(cuffL);
+
+    const handL = sphere(0.085, skin, {}, 10);
+    handL.position.set(-0.03, -0.3, 0.47);
+    this.fpAnchor.add(handL);
+  }
+
   // Standing rig used while dismounted: walking legs under the same
   // riderUpper (which carries torso, head, arms and the Uzi with it)
   _buildFootRig() {
@@ -3211,15 +3375,16 @@ class Player {
       hip.position.set(side * 0.15, 0.95, 0);
       this.footRoot.add(hip);
 
-      const thigh = box(0.19, 0.46, 0.21, buff);
+      const thigh = capsule(0.105, 0.3, buff, {}, 10);
       thigh.position.y = -0.24;
       hip.add(thigh);
 
-      const boot = box(0.17, 0.5, 0.2, 0x2a2119);
+      const boot = cyl(0.09, 0.078, 0.5, 0x2a2119, {}, 10);
       boot.position.y = -0.7;
       hip.add(boot);
 
-      const foot = box(0.16, 0.1, 0.3, 0x201a12);
+      const foot = sphere(0.09, 0x201a12, {}, 8);
+      foot.scale.set(0.9, 0.55, 1.7);
       foot.position.set(0, -0.92, 0.06);
       hip.add(foot);
 
@@ -3343,11 +3508,21 @@ class Player {
     }
   }
 
-  // First person: hide the rider's upper body so it doesn't block the view
+  // First person: hide the rider's body and swap the REAL uzi onto the
+  // camera-attached rig — gun and arms visible low-right like CoD. The
+  // muzzle rides with the uzi group, so tracers/flashes come from the gun.
   // (the horse stays visible for the riding feel; matrices still update, so
-  // the muzzle and eye anchors keep working).
-  setFirstPerson(fp) {
+  // the eye anchor keeps working).
+  setFirstPerson(fp, camera = null) {
     this.riderUpper.visible = !fp;
+    if (fp) {
+      if (camera && this.fpAnchor.parent !== camera) camera.add(this.fpAnchor);
+      this.fpAnchor.add(this.uziGroup); // keeps local pose — reload anim intact
+      this.fpAnchor.visible = true;
+    } else {
+      this.armR.add(this.uziGroup);
+      this.fpAnchor.visible = false;
+    }
   }
 
   // Keyframe interpolator: stops = [[t, value], ...] with cosine easing
@@ -3420,17 +3595,24 @@ class Player {
     if (input.isDown('KeyD')) move.add(right);
     if (input.isDown('KeyA')) move.sub(right);
 
+    // Shift = sprint: faster cap and harder acceleration, on foot or mounted
+    const sprint = (input.isDown('ShiftLeft') || input.isDown('ShiftRight')) && move.lengthSq() > 0;
+    this.sprinting = sprint;
+
     if (move.lengthSq() > 0 && !this.mounted) {
       // On foot: nimble direct movement, no galloping inertia
       move.normalize();
-      this.velocity.addScaledVector(move, 26 * dt);
-      if (this.velocity.length() > 6.5) this.velocity.setLength(6.5);
+      const footCap = sprint ? 10.5 : 6.5;
+      this.velocity.addScaledVector(move, (sprint ? 38 : 26) * dt);
+      if (this.velocity.length() > footCap) this.velocity.setLength(footCap);
     } else if (move.lengthSq() > 0) {
       move.normalize();
+      const maxSpd = sprint ? MAX_SPEED * 1.4 : MAX_SPEED;
+      const accel = sprint ? ACCEL * 1.3 : ACCEL;
       const speed = this.velocity.length();
       if (speed < 1.5) {
         // From a standstill the horse can step off in any direction
-        this.velocity.addScaledVector(move, ACCEL * dt * 0.6);
+        this.velocity.addScaledVector(move, accel * dt * 0.6);
       } else {
         // At speed the horse carves an arc: its travel direction can only
         // rotate so fast, and asking for a hard reversal bleeds speed first.
@@ -3446,11 +3628,11 @@ class Player {
 
         // Alignment: 1 = pushing forward, negative = braking into the turn
         const alignment = Math.cos(desA - newA);
-        let newSpeed = speed + ACCEL * dt * Math.max(alignment, -0.7);
-        newSpeed = THREE.MathUtils.clamp(newSpeed, 0, MAX_SPEED);
+        let newSpeed = speed + accel * dt * Math.max(alignment, -0.7);
+        newSpeed = THREE.MathUtils.clamp(newSpeed, 0, maxSpd);
         this.velocity.set(Math.sin(newA) * newSpeed, 0, Math.cos(newA) * newSpeed);
       }
-      if (this.velocity.length() > MAX_SPEED) this.velocity.setLength(MAX_SPEED);
+      if (this.velocity.length() > maxSpd) this.velocity.setLength(maxSpd);
     } else {
       const damp = Math.max(0, 1 - FRICTION * dt);
       this.velocity.multiplyScalar(damp);
@@ -3541,13 +3723,19 @@ class Player {
     // --- locomotion animation ---
     const ratio = this.speedRatio;
     if (!this.mounted) {
-      // Walking on foot: alternate leg swing, light bob
+      // Walking on foot: alternate leg swing, light bob. Sprinting pumps the
+      // legs harder and faster and pitches the whole body into the run.
       const footRatio = Math.min(this.velocity.length() / 6.5, 1);
-      this._footPhase += dt * (3 + footRatio * 9);
-      const swing = Math.sin(this._footPhase) * 0.65 * footRatio;
+      this._footPhase += dt * (3 + footRatio * 9) * (this.sprinting ? 1.35 : 1);
+      const stride = this.sprinting ? 0.95 : 0.65;
+      const swing = Math.sin(this._footPhase) * stride * footRatio;
       this.footLegs[0].rotation.x = swing;
       this.footLegs[1].rotation.x = -swing;
-      this.footRoot.position.y = Math.abs(Math.sin(this._footPhase)) * 0.05 * footRatio;
+      this.footRoot.position.y =
+        Math.abs(Math.sin(this._footPhase)) * (this.sprinting ? 0.09 : 0.05) * footRatio;
+      this.footRoot.rotation.x = THREE.MathUtils.lerp(
+        this.footRoot.rotation.x, this.sprinting ? 0.22 : 0, Math.min(1, 8 * dt)
+      );
     } else if (this.airborne) {
       // Legs tucked mid-jump
       for (const leg of this.legs) {
@@ -3556,12 +3744,21 @@ class Player {
       }
       this.meshRoot.position.y = 0;
     } else {
-      this.legPhase += dt * (2 + ratio * 6.5); // unhurried, weighty stride
+      // Sprint = full gallop: quicker stride, bigger leg sweep, deeper bob,
+      // and the horse stretches forward into the run
+      this.legPhase += dt * (2 + ratio * 6.5) * (this.sprinting ? 1.3 : 1);
+      const strideAmp = this.sprinting ? 0.95 : 0.8;
       for (const leg of this.legs) {
         const dir = leg.userData.phaseGroup === 0 ? 1 : -1;
-        leg.rotation.x = Math.sin(this.legPhase) * 0.8 * ratio * dir;
+        leg.rotation.x = Math.sin(this.legPhase) * strideAmp * ratio * dir;
       }
-      this.meshRoot.position.y = Math.abs(Math.sin(this.legPhase)) * 0.12 * ratio;
+      this.meshRoot.position.y =
+        Math.abs(Math.sin(this.legPhase)) * (this.sprinting ? 0.16 : 0.12) * ratio;
+      this.meshRoot.rotation.x = THREE.MathUtils.lerp(
+        this.meshRoot.rotation.x,
+        this.sprinting && ratio > 0.5 ? 0.06 : 0,
+        Math.min(1, 6 * dt)
+      );
     }
 
     this.recoil = Math.max(0, this.recoil - dt * 9);
@@ -3589,243 +3786,13 @@ class Player {
     this.jumpOffset = 0;
     this.vy = 0;
     this.airborne = false;
+    this.sprinting = false;
+    this.footRoot.rotation.x = 0;
     this._reloadT = null;
     this._swingT = null;
     this.swordPivot.visible = false;
     for (const splat of this.bloodDecals) splat.visible = false;
     this._bloodShown = 0;
-  }
-}
-
-// ===== src/entities/tank.js =====
-
-
-
-
-
-// Unique names: the single-file build merges every module into one scope
-const TANK_MAX_SPEED = 11;
-const TANK_ACCEL = 16;
-const TANK_FRICTION = 5;
-
-// A small one-man tank (very ahistorical, very fun). Same drive interface as
-// the horse Player so main.js can swap between them: slower, heavier steering,
-// crushes fences at speed, and its turret tracks the camera. The cannon
-// itself is fired by main.js on a 3-second cooldown.
-class Tank {
-  constructor(scene) {
-    this.scene = scene;
-    this.group = new THREE.Group();
-    this.group.rotation.order = 'YXZ';
-    this.meshRoot = new THREE.Group();
-    this.group.add(this.meshRoot);
-
-    this.velocity = new THREE.Vector3();
-    this.heading = 0;
-    this.slopePitch = 0;
-    this.hp = 130;
-    this.maxHp = 130;
-    this.timeSinceHurt = 99;
-
-    // Interface parity with Player (main.js checks these)
-    this.mounted = true;
-    this.airborne = false;
-    this.justLanded = false;
-    this.jumpOffset = 0;
-    this.bloodDecals = [];
-    this._bloodShown = 0;
-    this.brokeFence = null;
-    this.legs = [];
-
-    this._build();
-    this.meshRoot.scale.setScalar(2); // a proper tank, twice the size
-    this.group.position.y = terrainHeight(0, 0);
-    scene.add(this.group);
-  }
-
-  _build() {
-    const olive = 0x4a523a;
-    const oliveDark = 0x3a4030;
-    const steel = { roughness: 0.5, metalness: 0.55 };
-
-    // Hull
-    const hull = box(1.5, 0.55, 2.3, olive, steel);
-    hull.position.y = 0.85;
-    this.meshRoot.add(hull);
-
-    const glacis = box(1.3, 0.35, 0.5, oliveDark, steel);
-    glacis.position.set(0, 0.95, 1.25);
-    glacis.rotation.x = 0.5;
-    this.meshRoot.add(glacis);
-
-    // Tracks with road-wheel bumps
-    for (const side of [-1, 1]) {
-      const track = box(0.42, 0.6, 2.6, 0x24261f, { roughness: 0.9 });
-      track.position.set(side * 0.85, 0.5, 0);
-      this.meshRoot.add(track);
-      for (let i = 0; i < 4; i++) {
-        const wheel = cyl(0.18, 0.18, 0.44, 0x1a1c16, {}, 8);
-        wheel.rotation.z = Math.PI / 2;
-        wheel.position.set(side * 0.85, 0.28, -0.9 + i * 0.6);
-        this.meshRoot.add(wheel);
-      }
-    }
-
-    // Turret (tracks the camera) + cannon
-    this.turret = new THREE.Group();
-    this.turret.position.set(0, 1.25, -0.15);
-    this.meshRoot.add(this.turret);
-
-    const dome = cyl(0.5, 0.62, 0.42, olive, steel, 10);
-    dome.position.y = 0.2;
-    this.turret.add(dome);
-
-    const hatch = cyl(0.2, 0.2, 0.08, oliveDark, steel, 8);
-    hatch.position.y = 0.45;
-    this.turret.add(hatch);
-
-    const barrel = cyl(0.07, 0.09, 1.35, 0x2b2f33, steel, 10);
-    barrel.rotation.x = Math.PI / 2 - 0.06;
-    barrel.position.set(0, 0.22, 0.9);
-    this.turret.add(barrel);
-
-    const muzzleBrake = cyl(0.1, 0.1, 0.14, 0x22262a, steel, 8);
-    muzzleBrake.rotation.x = Math.PI / 2 - 0.06;
-    muzzleBrake.position.set(0, 0.26, 1.52);
-    this.turret.add(muzzleBrake);
-
-    // Cannon muzzle anchor + first-person eye on the hatch
-    this.muzzle = new THREE.Object3D();
-    this.muzzle.position.set(0, 0.27, 1.62);
-    this.turret.add(this.muzzle);
-
-    this.eyeAnchor = new THREE.Object3D();
-    this.eyeAnchor.position.set(0, 0.7, 0);
-    this.turret.add(this.eyeAnchor);
-  }
-
-  get position() {
-    return this.group.position;
-  }
-
-  get speedRatio() {
-    return Math.min(this.velocity.length() / TANK_MAX_SPEED, 1);
-  }
-
-  takeDamage(amount) {
-    this.hp = Math.max(0, this.hp - amount);
-    this.timeSinceHurt = 0;
-  }
-
-  // Interface no-ops (horse-specific features)
-  setReloadT() {}
-  addBlood() {}
-  swingSword() {}
-  toggleMount() {}
-  setFirstPerson(fp) {
-    this.turret.visible = !fp;
-  }
-
-  update(dt, input, camCtrl) {
-    const fwd = camCtrl.getGroundForward();
-    const right = camCtrl.getGroundRight();
-    const move = new THREE.Vector3();
-    if (input.isDown('KeyW')) move.add(fwd);
-    if (input.isDown('KeyS')) move.sub(fwd);
-    if (input.isDown('KeyD')) move.add(right);
-    if (input.isDown('KeyA')) move.sub(right);
-
-    if (move.lengthSq() > 0) {
-      move.normalize();
-      const speed = this.velocity.length();
-      if (speed < 1) {
-        this.velocity.addScaledVector(move, TANK_ACCEL * dt * 0.7);
-      } else {
-        // Tracks turn even slower than hooves
-        const curA = Math.atan2(this.velocity.x, this.velocity.z);
-        const desA = Math.atan2(move.x, move.z);
-        let dA = desA - curA;
-        while (dA > Math.PI) dA -= Math.PI * 2;
-        while (dA < -Math.PI) dA += Math.PI * 2;
-        const maxTurn = THREE.MathUtils.lerp(2.0, 0.9, this.speedRatio) * dt;
-        const newA = curA + THREE.MathUtils.clamp(dA, -maxTurn, maxTurn);
-        const alignment = Math.cos(desA - newA);
-        let newSpeed = speed + TANK_ACCEL * dt * Math.max(alignment, -0.7);
-        newSpeed = THREE.MathUtils.clamp(newSpeed, 0, TANK_MAX_SPEED);
-        this.velocity.set(Math.sin(newA) * newSpeed, 0, Math.cos(newA) * newSpeed);
-      }
-    } else {
-      const damp = Math.max(0, 1 - TANK_FRICTION * dt);
-      this.velocity.multiplyScalar(damp);
-      if (this.velocity.lengthSq() < 0.01) this.velocity.set(0, 0, 0);
-    }
-
-    this.group.position.x += this.velocity.x * dt;
-    this.group.position.z += this.velocity.z * dt;
-
-    const r = Math.hypot(this.group.position.x, this.group.position.z);
-    if (r > MAP_RADIUS) {
-      this.group.position.x *= MAP_RADIUS / r;
-      this.group.position.z *= MAP_RADIUS / r;
-    }
-
-    // Solid props; a tank flattens fence sections at any real speed
-    const speedNow = this.velocity.length();
-    const hit = resolvePoint(this.group.position, 2.3);
-    if (hit) {
-      const c = hit.collider;
-      if (c && c.kind === 'segment' && c.breakable && speedNow > 4) {
-        removeCollider(c);
-        this.brokeFence = {
-          pos: this.group.position.clone(),
-          pieces: c.pieces || [],
-          dir: this.velocity.clone().normalize(),
-        };
-        this.velocity.multiplyScalar(0.92);
-      } else {
-        this.velocity.multiplyScalar(0.5);
-      }
-    }
-
-    // Hull heading + terrain
-    if (speedNow > 0.5) {
-      const targetHeading = Math.atan2(this.velocity.x, this.velocity.z);
-      let diff = targetHeading - this.heading;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      this.heading += diff * Math.min(1, 4 * dt);
-    }
-    this.group.rotation.y = this.heading;
-    this.group.position.y = terrainHeight(this.group.position.x, this.group.position.z);
-
-    const sx = Math.sin(this.heading), sz = Math.cos(this.heading);
-    const ahead = terrainHeight(this.group.position.x + sx * 1.6, this.group.position.z + sz * 1.6);
-    const behind = terrainHeight(this.group.position.x - sx * 1.6, this.group.position.z - sz * 1.6);
-    this.slopePitch = THREE.MathUtils.lerp(this.slopePitch, Math.atan2(behind - ahead, 3.2), Math.min(1, 6 * dt));
-    this.group.rotation.x = this.slopePitch;
-
-    // Turret follows the camera aim
-    let turretYaw = (camCtrl.yaw + Math.PI) - this.heading;
-    while (turretYaw > Math.PI) turretYaw -= Math.PI * 2;
-    while (turretYaw < -Math.PI) turretYaw += Math.PI * 2;
-    this.turret.rotation.y = THREE.MathUtils.lerp(this.turret.rotation.y, turretYaw, Math.min(1, 8 * dt));
-
-    this.timeSinceHurt += dt;
-    if (this.timeSinceHurt > 5 && this.hp > 0) {
-      this.hp = Math.min(this.maxHp, this.hp + 4 * dt);
-    }
-  }
-
-  reset() {
-    this.group.position.set(0, terrainHeight(0, 0), 0);
-    this.velocity.set(0, 0, 0);
-    this.hp = this.maxHp;
-    this.heading = 0;
-    this.timeSinceHurt = 99;
-  }
-
-  dispose() {
-    this.scene.remove(this.group);
   }
 }
 
@@ -3842,8 +3809,8 @@ const BLACK = 0x18140f;
 const BRASS = 0xc9a44a;
 
 // Redcoat enemy. Two variants:
-//   'infantry' — 100 HP, marches, fires a musket every 5 seconds
-//   'cavalry'  — 200 HP, mounted, fast, melees at close range
+//   'infantry' — 80 HP, marches, fires a musket every 5 seconds
+//   'cavalry'  — 160 HP, mounted, fast, melees at close range
 // Hit zones: meshes tagged userData.zone = 'head' are ONE-SHOT kills.
 // Built from cylinders/spheres (less blocky) with a full joint chain —
 // shoulders, ELBOWS, hips and KNEES all pivot independently so the ragdoll
@@ -3854,7 +3821,7 @@ class Enemy {
     this.audio = audio;
     this.particles = particles;
     this.type = type; // 'infantry' | 'cavalry' | 'mortar' | 'cannon'
-    this.hp = type === 'cavalry' ? 200 : 100;
+    this.hp = type === 'cavalry' ? 160 : 80;
     this.maxHp = this.hp;
     this.speed = type === 'cavalry' ? 10.5 : type === 'mortar' ? 4.5 : type === 'cannon' ? 3.6 : 6;
     this.mortarTimer = 5 + Math.random() * 4; // shared artillery fire timer
@@ -3864,6 +3831,8 @@ class Enemy {
 
     this.musketTimer = 1.5 + Math.random() * 5; // desync volleys
     this.meleeTimer = 0;
+    this.strikeT = null; // musket-butt swing progress (null = not swinging)
+    this._struck = false;
     this.legPhase = Math.random() * Math.PI * 2;
     this.heading = Math.random() * Math.PI * 2;
 
@@ -3945,7 +3914,8 @@ class Enemy {
         calf.position.y = -0.2;
         knee.add(calf);
 
-        const shoe = box(0.16, 0.09, 0.3, BLACK);
+        const shoe = sphere(0.09, BLACK, {}, 8);
+        shoe.scale.set(0.9, 0.5, 1.7);
         shoe.position.set(0, -0.43, 0.06);
         knee.add(shoe);
 
@@ -4025,7 +3995,7 @@ class Enemy {
     headLimb.add(head);
 
     for (const side of [-1, 1]) {
-      const eye = box(0.05, 0.045, 0.03, 0x1a140e);
+      const eye = sphere(0.03, 0x1a140e, {}, 6);
       eye.position.set(side * 0.08, headY + 0.05, 0.18);
       eye.userData.zone = 'head';
       headLimb.add(eye);
@@ -4035,7 +4005,8 @@ class Enemy {
       curl.position.set(side * 0.19, headY + 0.01, -0.02);
       headLimb.add(curl);
     }
-    const nose = box(0.055, 0.09, 0.055, 0xc98f5d);
+    const nose = sphere(0.045, 0xc98f5d, {}, 8);
+    nose.scale.set(0.85, 1.3, 0.95);
     nose.position.set(0, headY - 0.02, 0.2);
     nose.userData.zone = 'head';
     headLimb.add(nose);
@@ -4248,7 +4219,8 @@ class Enemy {
     neck.rotation.x = 0.5;
     this.group.add(neck);
 
-    const skull = box(0.36, 0.42, 0.5, coat);
+    const skull = sphere(0.25, coat, {}, 12);
+    skull.scale.set(0.78, 0.88, 1.15);
     skull.position.set(0, 2.5, 1.55);
     this.group.add(skull);
 
@@ -4363,10 +4335,20 @@ class Enemy {
         moving = true;
       }
 
-      this.musketTimer -= dt;
-      if (this.musketTimer <= 0 && dist < 70) {
-        this.musketTimer = 5; // GDD: one round every 5 seconds
-        this._fireMusket(dist, events, playerPos);
+      if (dist < 3.4) {
+        // Too close for musketry — swing the butt of the Brown Bess instead
+        this.meleeTimer -= dt;
+        if (this.meleeTimer <= 0 && this.strikeT == null) {
+          this.meleeTimer = 1.5;
+          this.strikeT = 0;
+          this._struck = false;
+        }
+      } else {
+        this.musketTimer -= dt;
+        if (this.musketTimer <= 0 && dist < 70) {
+          this.musketTimer = 5; // GDD: one round every 5 seconds
+          this._fireMusket(dist, events, playerPos);
+        }
       }
     } else if (this.type === 'cannon') {
       // Gun crews work the piece from far off: push forward into range,
@@ -4382,15 +4364,20 @@ class Enemy {
       } else {
         this.mortarTimer -= dt;
         if (this.mortarTimer <= 0 && dist < 120) {
-          this.mortarTimer = 9 + Math.random() * 3;
+          this.mortarTimer = 5.5 + Math.random() * 2;
           const from = new THREE.Vector3();
           this.cannonTip.getWorldPosition(from);
-          this.audio.playPositional('boom', this.group, { volume: 0.5, refDistance: 24 });
+          this.audio.playPositional('boom', this.group, { volume: 0.55, refDistance: 26 });
           if (this.particles) {
             this.particles.smoke(from);
             this.particles.flame(from);
             this.particles.spark(from);
+            this.particles.smoke(from); // double charge of powder smoke
           }
+          const flash = new THREE.PointLight(0xffb35c, 22, 16);
+          flash.position.copy(from);
+          this.scene.add(flash);
+          setTimeout(() => this.scene.remove(flash), 90);
           events.push({ type: 'cannonFire', from, enemy: this });
         }
       }
@@ -4419,9 +4406,31 @@ class Enemy {
         moving = true;
       } else {
         this.meleeTimer -= dt;
-        if (this.meleeTimer <= 0) {
-          this.meleeTimer = 1.2;
-          events.push({ type: 'melee', damage: 18, enemy: this });
+        if (this.meleeTimer <= 0 && this.strikeT == null) {
+          this.meleeTimer = 1.3;
+          this.strikeT = 0;
+          this._struck = false;
+        }
+      }
+    }
+
+    // Melee strike animation: the right arm winds up over the shoulder,
+    // then smashes forward. Damage lands mid-swing IF the rider is still
+    // in reach — you can back out of a swing you see coming.
+    if (this.strikeT != null) {
+      this.strikeT += dt / 0.55;
+      const arm = this.limbs.armR;
+      if (this.strikeT >= 1) {
+        this.strikeT = null;
+        if (arm) arm.rotation.x = 0;
+      } else if (arm) {
+        const t = this.strikeT;
+        arm.rotation.x = t < 0.4 ? -(t / 0.4) * 1.9 : -1.9 + ((t - 0.4) / 0.6) * 2.7;
+        if (!this._struck && t >= 0.55) {
+          this._struck = true;
+          if (dist < 4.2) {
+            events.push({ type: 'melee', damage: this.type === 'cavalry' ? 18 : 12, enemy: this });
+          }
         }
       }
     }
@@ -4899,28 +4908,16 @@ class WaveManager {
     this.timer = 2.5;
   }
 
-  setTankMode(on) {
-    this.tankMode = !!on;
-  }
-
   _beginWave() {
     this.wave += 1;
     this.state = 'active';
 
     // Wave 1 = 10 redcoats, +5 every wave after (capped for performance).
-    // Artillery joins from wave 2 and grows fast. Tank mode piles on more
-    // of everything — a tank deserves a real bombardment.
-    const tank = this.tankMode;
-    let total = Math.min(10 + (this.wave - 1) * 5, 50);
-    let cavalry = Math.min(Math.floor(this.wave / 2) * 2, Math.floor(total / 4));
-    let mortars = this.wave >= 2 ? Math.min(2 + Math.floor(this.wave / 2), 6) : 0;
-    let cannons = this.wave >= 2 ? Math.min(1 + Math.floor((this.wave - 1) / 2), 4) : 0;
-    if (tank) {
-      total = Math.min(Math.round(total * 1.4), 60);
-      cavalry = Math.min(Math.round(cavalry * 1.6) + 1, Math.floor(total / 3));
-      mortars = Math.min(mortars + 2, 8);
-      cannons = Math.min(cannons + 1, 5);
-    }
+    // Artillery joins early and grows fast.
+    const total = Math.min(10 + (this.wave - 1) * 5, 50);
+    const cavalry = Math.min(Math.floor(this.wave / 2) * 2, Math.floor(total / 4));
+    const mortars = this.wave >= 2 ? Math.min(2 + Math.floor(this.wave / 2), 6) : 0;
+    const cannons = Math.min(2 + Math.floor(this.wave / 2), 8); // guns from wave 1, heavy battery fast
     const infantry = Math.max(0, total - cavalry - mortars - cannons);
 
     const types = [];
@@ -5259,11 +5256,38 @@ class ThirdPersonCamera {
     return this.view;
   }
 
+  // Returns the new view when scrolling crosses a view boundary (so the
+  // caller can hide the rider / show a banner), null otherwise.
   handleWheel(deltaY) {
-    if (!deltaY) return;
+    if (!deltaY) return null;
+
+    // Scrolling out of first person drops back to the hip view, close in
+    if (this.view.fp) {
+      if (deltaY > 0) {
+        this.viewIndex = 0;
+        this._zoomTarget = 0.55;
+        return this.view;
+      }
+      return null;
+    }
+
+    const prev = this._zoomTarget;
     this._zoomTarget = THREE.MathUtils.clamp(
-      this._zoomTarget * Math.exp(deltaY * 0.0011), 0.4, 2.4
+      prev * Math.exp(deltaY * 0.0011), 0.4, 2.4
     );
+
+    // Scrolling in while already fully zoomed steps the view closer:
+    // third person -> hip -> first person
+    if (deltaY < 0 && prev <= 0.401) {
+      if (this.viewIndex === 1) {
+        this.viewIndex = 0;
+        this._zoomTarget = 0.8;
+      } else if (this.viewIndex === 0) {
+        this.viewIndex = VIEWS.findIndex((v) => v.fp);
+      }
+      return this.view;
+    }
+    return null;
   }
 
   addShake(amount) {
@@ -5375,8 +5399,6 @@ class ThirdPersonCamera {
 
 
 
-
-
 const TRAMPLE_SPEED = 9;   // min player speed for an instant-kill trample
 const TRAMPLE_RANGE = 3.0;
 
@@ -5395,6 +5417,9 @@ class Game {
     this.camera = new THREE.PerspectiveCamera(
       70, window.innerWidth / window.innerHeight, 0.1, 900
     );
+    // The camera must live IN the scene graph or its children (the
+    // first-person gun + arms rig) are silently never rendered
+    this.scene.add(this.camera);
 
     const { sun, smokeSources } = createWorld(this.scene);
     this.sun = sun;
@@ -5403,7 +5428,7 @@ class Game {
     this.input = new Input();
     this.ui = new UI();
     this.audio = new AudioManager(this.camera);
-    this.audio.setMuted(true); // audio muted per request — set to false to re-enable everything
+    this.audio.setMuted(false); // sound on — hard-stopped while paused/hidden via _syncAudio
     this.camCtrl = new ThirdPersonCamera(this.camera);
     this.player = new Player(this.scene);
     this.particles = new Particles(this.scene);
@@ -5417,9 +5442,7 @@ class Game {
     this._rWasDown = false;
     this._vWasDown = false;
     this._eyePos = new THREE.Vector3();
-    this.shells = []; // mortar/cannon/tank shells in flight
-    this.vehicle = 'horse';
-    this.tankCd = 0;
+    this.shells = []; // mortar/cannon shells in flight
     this._eWasDown = false;
 
     this._bindEvents();
@@ -5456,9 +5479,11 @@ class Game {
         this.input.pointerLocked = false;
         this.state = 'paused';
         this.ui.showScreen('pause');
+        this._syncAudio();
       }
-      // F toggles fullscreen and grabs the mouse so it can't leave the game
-      if (e.code === 'KeyF' && this.state === 'playing') {
+      // G toggles fullscreen and grabs the mouse so it can't leave the game
+      // (F is the saber strike)
+      if (e.code === 'KeyG' && this.state === 'playing') {
         if (!document.fullscreenElement) {
           document.documentElement.requestFullscreen().then(() => {
             const p = this.canvas.requestPointerLock();
@@ -5480,18 +5505,6 @@ class Game {
         } catch (err) { /* stay in fallback */ }
       }
     });
-    // Lobby vehicle picker: choosing doesn't start the game (stopPropagation)
-    for (const [id, mode] of [['pick-horse', 'horse'], ['pick-tank', 'tank']]) {
-      const btn = document.getElementById(id);
-      if (!btn) continue;
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this._applyVehicleChoice(mode);
-        document.getElementById('pick-horse').classList.toggle('selected', mode === 'horse');
-        document.getElementById('pick-tank').classList.toggle('selected', mode === 'tank');
-      });
-    }
-
     this.ui.overlayStart.addEventListener('click', requestPlay);
     this.ui.overlayPause.addEventListener('click', requestPlay);
     this.ui.overlayDeath.addEventListener('click', () => {
@@ -5517,7 +5530,22 @@ class Game {
           this.ui.showScreen('pause');
         }
       }
+      this._syncAudio();
     });
+
+    // All sound stops the moment the game isn't the thing on screen:
+    // tab switch / minimize (visibilitychange), window losing focus (blur),
+    // or the page being closed/navigated away (pagehide).
+    document.addEventListener('visibilitychange', () => this._syncAudio());
+    window.addEventListener('blur', () => this.audio.setSuspended(true));
+    window.addEventListener('focus', () => this._syncAudio());
+    window.addEventListener('pagehide', () => this.audio.setSuspended(true));
+  }
+
+  // Sound runs only while actively playing with the game on screen
+  _syncAudio() {
+    const active = this.state === 'playing' && !document.hidden;
+    this.audio.setSuspended(!active);
   }
 
   // Some embedded browsers refuse the Pointer Lock API entirely — run with
@@ -5530,66 +5558,9 @@ class Game {
     this.state = 'playing';
     this.ui.showScreen('game');
     this.clock.getDelta();
+    this._syncAudio();
   }
 
-  // Swap between the white charger and the little tank (lobby only)
-  _applyVehicleChoice(mode) {
-    if (mode === this.vehicle) return;
-    this.player.dispose();
-    this.player = mode === 'tank' ? new Tank(this.scene) : new Player(this.scene);
-    this.vehicle = mode;
-    this.waves.setTankMode(mode === 'tank');
-    this.weapon.reset();
-    this.tankCd = 0;
-    // Muzzle-flash sprites live on the old gun — re-home them next update
-    if (this.weapon.flashGroup) {
-      this.weapon.flashGroup.removeFromParent();
-      this.weapon._flashAttached = false;
-    }
-  }
-
-  // Tank cannon: one shell every 3 seconds, straight at the crosshair
-  _fireTankShell() {
-    const from = new THREE.Vector3();
-    this.player.muzzle.getWorldPosition(from);
-    const dir = new THREE.Vector3();
-    this.camera.getWorldDirection(dir);
-
-    const mesh = new THREE.Mesh(
-      new THREE.SphereGeometry(0.16, 8, 8),
-      new THREE.MeshStandardMaterial({ color: 0x1d2126, roughness: 0.5, metalness: 0.6 })
-    );
-    mesh.castShadow = true;
-    mesh.position.copy(from);
-    this.scene.add(mesh);
-    this.shells.push({
-      mesh,
-      vel: dir.multiplyScalar(38),
-      g: 7, // flat, fast trajectory
-      smokeT: 0,
-      whistled: true, // no incoming-whistle for your own shells
-      big: false,
-      friendly: true,
-    });
-
-    // A serious muzzle blast: triple fire, sparks, a rolling smoke cloud,
-    // a hot flash of light, and a lingering smoke line down the barrel
-    for (let i = 0; i < 3; i++) {
-      this.particles.flame(from.clone());
-      this.particles.spark(from.clone());
-    }
-    this.particles.spawnBurst(from.clone(), {
-      color: 0x8f938c, count: 22, speed: 3, size: 0.65, life: 2.2, gravity: -0.9, upBias: 1.6,
-    });
-    this.particles.trailSmoke(from, from.clone().addScaledVector(dir.clone().normalize(), 14));
-    const flash = new THREE.PointLight(0xffa040, 55, 22);
-    flash.position.copy(from);
-    this.scene.add(flash);
-    setTimeout(() => this.scene.remove(flash), 100);
-
-    this.audio.playSfx('boom', { volume: 0.7, rate: 1.15, rateJitter: 0.05 });
-    this.camCtrl.addShake(0.3);
-  }
 
   // Knock house wall chunks loose around a blast point — a corner shot
   // takes the corner, not the building
@@ -5656,36 +5627,6 @@ class Game {
       s.vel.y -= (s.g ?? 26) * dt;
       s.mesh.position.addScaledVector(s.vel, dt);
 
-      // Tank shells burst on contact with a redcoat OR a house wall
-      if (s.friendly) {
-        let hitSomething = s.mesh.position.length() > 400;
-        for (const e of this.waves.enemies) {
-          if (e.dead || e.dying) continue;
-          const d = s.mesh.position.distanceTo(e.group.position);
-          if (d < 1.6) { hitSomething = true; break; }
-        }
-        if (!hitSomething) {
-          const sy = s.mesh.position.y - terrainHeight(s.mesh.position.x, s.mesh.position.z);
-          if (sy < 5.5) {
-            for (const c of colliders) {
-              if (c.kind === 'box' && c.isHouse && pointInBox(c, s.mesh.position.x, s.mesh.position.z)) {
-                hitSomething = true;
-                break;
-              }
-            }
-          }
-        }
-        if (hitSomething) {
-          const at = s.mesh.position.clone();
-          this.scene.remove(s.mesh);
-          s.mesh.geometry.dispose();
-          s.mesh.material.dispose();
-          this.shells.splice(i, 1);
-          this._explodeShell(at, false, true);
-          continue;
-        }
-      }
-
       // Sputtering fuse smoke
       s.smokeT -= dt;
       if (s.smokeT <= 0) {
@@ -5714,18 +5655,27 @@ class Game {
         s.mesh.geometry.dispose();
         s.mesh.material.dispose();
         this.shells.splice(i, 1);
-        this._explodeShell(at, s.big, s.friendly);
+        this._explodeShell(at, s.big);
       }
     }
   }
 
-  _explodeShell(at, big = false, friendly = false) {
+  _explodeShell(at, big = false) {
     // Dig a real crater into the terrain (scorch, rim clods, flattened grass)
-    const r = blastCrater(this.scene, at.x, at.z, big ? 1.6 : friendly ? 1.5 : 1);
-    const k = big ? 1.8 : friendly ? 1.6 : 1; // effect scale
+    const r = blastCrater(this.scene, at.x, at.z, big ? 2.2 : 1);
+    const k = big ? 2.6 : 1; // effect scale
 
     // Carve nearby house walls into flying rubble
     this._blastHouseChunks(at, r * 0.6 + 1.6);
+
+    // The ground just sank here — wake corpses resting near the new crater
+    // so bodies, torn-off limbs and blood pools tumble down into the bowl
+    // instead of floating over it (craterDip reaches out to 2x the radius)
+    for (const e of this.waves.enemies) {
+      if (!e.dying || !e.ragdoll) continue;
+      const dc = Math.hypot(e.group.position.x - at.x, e.group.position.z - at.z);
+      if (dc < r * 2 + 2) e.ragdoll.wake();
+    }
 
     // Dirt hurled HIGH into the sky: a tall central column + a wide fan
     const plume = at.clone();
@@ -5743,15 +5693,25 @@ class Game {
       life: 2.6, gravity: -0.8, upBias: 2,
     });
 
-    // Big shells (and your tank's) throw a fireball + a hot flash of light
-    if (big || friendly) {
+    // Big shells throw a fireball + a hot flash of light
+    if (big) {
       this.particles.spawnBurst(plume, {
-        color: 0xff7a20, count: 34, speed: 8, size: 0.55, life: 0.45, gravity: -3, upBias: 4,
+        color: 0xff7a20, count: big ? 70 : 34, speed: big ? 12 : 8,
+        size: big ? 0.85 : 0.55, life: big ? 0.6 : 0.45, gravity: -3, upBias: big ? 7 : 4,
       });
-      const flash = new THREE.PointLight(0xff9440, 60, 30);
+      if (big) {
+        // Rolling secondary fireball + lingering black smoke column
+        this.particles.spawnBurst(plume, {
+          color: 0xffb040, count: 30, speed: 5, size: 0.65, life: 0.5, gravity: -4, upBias: 9,
+        });
+        this.particles.spawnBurst(plume, {
+          color: 0x2c2a26, count: 26, speed: 2.5, size: 1.1, life: 3.2, gravity: -1.4, upBias: 4,
+        });
+      }
+      const flash = new THREE.PointLight(0xff9440, big ? 140 : 60, big ? 46 : 30);
       flash.position.copy(at).y += 2;
       this.scene.add(flash);
-      setTimeout(() => this.scene.remove(flash), 130);
+      setTimeout(() => this.scene.remove(flash), big ? 190 : 130);
     }
 
     const dPlayer = at.distanceTo(this.player.position);
@@ -5760,29 +5720,26 @@ class Game {
       rate: big ? 0.8 : 1,
       rateJitter: 0.08,
     });
-    this.camCtrl.addShake(Math.min(big ? 0.6 : 0.45, (big ? 13 : 8) / Math.max(dPlayer, 1)));
+    this.camCtrl.addShake(Math.min(big ? 0.85 : 0.45, (big ? 18 : 8) / Math.max(dPlayer, 1)));
 
-    // Blast damage to the rider (your own tank shells spare you)...
-    const dmgRadius = big ? 9.5 : 7;
-    if (!friendly && dPlayer < dmgRadius) {
+    // Blast damage to the rider...
+    const dmgRadius = big ? 11.5 : 7;
+    if (dPlayer < dmgRadius) {
       this.player.takeDamage(Math.round((big ? 40 : 30) * (1 - dPlayer / dmgRadius)) + 6);
       this.ui.flashDamage();
       this.audio.playSfx('hurt', { volume: 0.7 });
     }
 
     // ...and to any redcoat standing too close (war is messy)
-    const killRadius = friendly ? r + 2.5 : r + 1.5;
+    const killRadius = r + 1.5;
     for (const e of this.waves.enemies) {
       if (e.dead || e.dying) continue;
       const dx = e.group.position.x - at.x;
       const dz = e.group.position.z - at.z;
       const dEnemy = Math.hypot(dx, dz);
       if (dEnemy < killRadius) {
-        // Real blast physics: the closer they stand, the harder they fly
-        const power = 1 - dEnemy / killRadius;
-        const impulse = new THREE.Vector3(dx, 0, dz)
-          .setLength((friendly ? 10 + 16 * power : 10));
-        impulse.y = friendly ? 8 + 8 * power : 7;
+        const impulse = new THREE.Vector3(dx, 0, dz).setLength(10);
+        impulse.y = 7;
         e.kill(impulse, true); // explosions can tear limbs off
         this.waves.onKill();
         this.particles.blood(e.group.position.clone().setY(e.group.position.y + 1), true);
@@ -5812,6 +5769,7 @@ class Game {
     this.ui.showScreen('death');
     if (document.pointerLockElement) document.exitPointerLock();
     this.input.pointerLocked = false;
+    this._syncAudio();
   }
 
   _tick() {
@@ -5849,9 +5807,9 @@ class Game {
       return;
     }
 
-    // --- E: dismount / remount (horse only) ---
+    // --- E: dismount / remount ---
     const eDown = this.input.isDown('KeyE');
-    if (eDown && !this._eWasDown && this.vehicle === 'horse') {
+    if (eDown && !this._eWasDown) {
       const result = this.player.toggleMount();
       if (result === 'dismounted') this.ui.showBanner('ON FOOT — E NEAR HORSE TO MOUNT', 1.6);
       else if (result === 'mounted') this.ui.showBanner('MOUNTED', 0.8);
@@ -5859,24 +5817,68 @@ class Game {
     }
     this._eWasDown = eDown;
 
-    // --- camera height follows the ride (saddle / boots / tank hatch) ---
-    this.camCtrl.bodyLift = this.vehicle === 'tank' ? -0.7 : this.player.mounted ? 0 : -1.0;
+    // --- F: saber strike — swing the sword at anything in front of you ---
+    this.meleeCd = Math.max(0, (this.meleeCd || 0) - dt);
+    const fDown = this.input.isDown('KeyF');
+    if (fDown && !this._fWasDown && this.meleeCd <= 0) {
+      this.meleeCd = 0.7;
+      this.player.swingSword();
+      const fwd = this.camCtrl.getGroundForward();
+      let hitAny = false;
+      for (const e of this.waves.enemies) {
+        if (e.dead || e.dying) continue;
+        const dx = e.group.position.x - this.player.position.x;
+        const dz = e.group.position.z - this.player.position.z;
+        const d = Math.hypot(dx, dz);
+        if (d > 3.8) continue;
+        if ((dx * fwd.x + dz * fwd.z) / Math.max(d, 0.001) < 0.25) continue; // must be in front
+        const impulse = new THREE.Vector3(dx, 0, dz).setLength(9);
+        impulse.y = 5;
+        const killed = e.takeDamage(80, impulse); // one clean cut fells an infantryman
+        hitAny = true;
+        const at = e.group.position.clone();
+        at.y += 1.4;
+        this.particles.blood(at, killed);
+        if (killed) this.waves.onKill();
+      }
+      this.audio.playSfx(hitAny ? 'squish' : 'whistle', {
+        volume: hitAny ? 0.8 : 0.3, rate: hitAny ? 1.1 : 1.7, rateJitter: 0.1,
+      });
+      this.camCtrl.addShake(hitAny ? 0.12 : 0.05);
+    }
+    this._fWasDown = fDown;
+
+    // --- camera height follows the ride (saddle / boots) ---
+    this.camCtrl.bodyLift = this.player.mounted ? 0 : -1.0;
 
     // --- camera view cycling (V) ---
     const vDown = this.input.isDown('KeyV');
     if (vDown && !this._vWasDown) {
       const view = this.camCtrl.cycleView();
-      this.player.setFirstPerson(view.fp);
+      this.player.setFirstPerson(view.fp, this.camera);
       this.ui.showBanner(view.name, 0.9);
     }
     this._vWasDown = vDown;
 
     // --- player & camera ---
-    this.camCtrl.handleWheel(this.input.consumeWheel());
+    // Scroll wheel zooms; zooming all the way in enters first person,
+    // scrolling back out exits it
+    const wheelView = this.camCtrl.handleWheel(this.input.consumeWheel());
+    if (wheelView) {
+      this.player.setFirstPerson(wheelView.fp, this.camera);
+      this.ui.showBanner(wheelView.name, 0.9);
+    }
     this.player.update(dt, this.input, this.camCtrl);
     this.player.eyeAnchor.getWorldPosition(this._eyePos);
     this.camCtrl.update(dt, this.player.position, this.input.consumeMouseDelta(), this._eyePos);
     updateSun(this.sun, this.player.position);
+
+    // Sprint FOV kick: the world widens slightly at a full sprint
+    const targetFov = 70 + (this.player.sprinting ? 7 : 0);
+    if (Math.abs(this.camera.fov - targetFov) > 0.05) {
+      this.camera.fov += (targetFov - this.camera.fov) * Math.min(1, 8 * dt);
+      this.camera.updateProjectionMatrix();
+    }
 
     // --- gallop + landing audio ---
     if (!this.player.airborne) this.audio.updateGallop(dt, this.player.speedRatio);
@@ -5890,11 +5892,9 @@ class Game {
     const events = [];
     this.waves.update(dt, this.player.position, events);
 
-    // Trample: fast horse (or any rolling tank) + contact = instant kill
+    // Trample: fast horse + contact = instant kill
     const playerSpeed = this.player.velocity.length();
-    const trampleMin = this.vehicle === 'tank' ? 5 : TRAMPLE_SPEED;
-    const canTrample = this.vehicle === 'tank' || this.player.mounted;
-    if (canTrample && playerSpeed > trampleMin) {
+    if (this.player.mounted && playerSpeed > TRAMPLE_SPEED) {
       for (const e of this.waves.enemies) {
         if (e.dead || e.dying) continue;
         const dx = e.group.position.x - this.player.position.x;
@@ -6002,9 +6002,7 @@ class Game {
         this._launchShell(ev);
         continue;
       }
-      // Tank runs draw heavier fire per hit
-      const dmg = this.vehicle === 'tank' ? Math.round(ev.damage * 1.25) : ev.damage;
-      this.player.takeDamage(dmg);
+      this.player.takeDamage(ev.damage);
       this.ui.flashDamage();
       this.audio.playSfx('hurt', { volume: 0.6, rateJitter: 0.1 });
       this.camCtrl.addShake(0.18);
@@ -6021,29 +6019,20 @@ class Game {
     // steers the camera and the center dot is where bullets go.
     const aimNdc = { x: 0, y: 0 };
 
-    if (this.vehicle === 'tank') {
-      // Tank cannon: 3-second cooldown, shell explodes among the redcoats
-      this.tankCd = Math.max(0, this.tankCd - dt);
-      if (this.input.fireHeld && this.tankCd <= 0) {
-        this.tankCd = 3;
-        this._fireTankShell();
-      }
-    } else {
-      this.weapon.update(
-        dt,
-        this.input.fireHeld,
-        this.player,
-        this.waves.enemies,
-        (enemy, dmg, zone, point, impulse) => {
-          const killed = enemy.takeDamage(dmg, impulse);
-          this.particles.blood(point, killed || zone === 'head');
-          if (killed) this.waves.onKill();
-        },
-        this.camCtrl,
-        reloadRequested,
-        aimNdc
-      );
-    }
+    this.weapon.update(
+      dt,
+      this.input.fireHeld,
+      this.player,
+      this.waves.enemies,
+      (enemy, dmg, zone, point, impulse) => {
+        const killed = enemy.takeDamage(dmg, impulse);
+        this.particles.blood(point, killed || zone === 'head');
+        if (killed) this.waves.onKill();
+      },
+      this.camCtrl,
+      reloadRequested,
+      aimNdc
+    );
 
     // --- death check ---
     if (this.player.hp <= 0) {
@@ -6058,11 +6047,11 @@ class Game {
       kills: this.waves.kills,
       hp: this.player.hp,
       maxHp: this.player.maxHp,
-      heat: this.vehicle === 'tank' ? this.tankCd / 3 : this.weapon.heat,
-      overheated: this.vehicle === 'tank' ? false : this.weapon.overheated,
-      ammo: this.vehicle === 'tank' ? (this.tankCd <= 0 ? 1 : 0) : this.weapon.ammo,
-      magSize: this.vehicle === 'tank' ? 1 : this.weapon.magSize,
-      reloading: this.vehicle === 'tank' ? this.tankCd > 0 : this.weapon.reloading,
+      heat: this.weapon.heat,
+      overheated: this.weapon.overheated,
+      ammo: this.weapon.ammo,
+      magSize: this.weapon.magSize,
+      reloading: this.weapon.reloading,
       intermissionTime: this.waves.state === 'intermission' ? this.waves.timer : null,
     });
 
