@@ -4,7 +4,7 @@ import { terrainHeight } from '../world/terrain.js';
 import { resolvePoint, removeCollider } from '../world/colliders.js';
 import { box, cyl, sphere, capsule } from '../core/assets.js';
 
-const MAX_SPEED = 17;
+const MAX_SPEED = 13.6; // trimmed 20% — the charger keeps a manageable pace
 const ACCEL = 42;
 const FRICTION = 8;
 const JUMP_VELOCITY = 9.5;

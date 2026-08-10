@@ -538,7 +538,13 @@ class Game {
       yaw: this.camCtrl.yaw,
       pitch: this.camCtrl.pitch,
     };
-    this._ai = { fireT: 0, burstT: 0, ammo: 25, reloadT: null, strafeDir: 1, strafeT: 4 };
+    this._ai = {
+      fireT: 0, burstT: 0, ammo: 25, reloadT: null,
+      strafeDir: 1, strafeT: 4,
+      holdT: 3, holdFor: 0,          // occasional trigger hesitation
+      wanderT: 0, wanderDir: null,   // idle roaming between fights
+      finCd: 10, finTarget: null,    // the odd up-close knife finisher
+    };
     this.player.aiming = false;
     this.ui.showBanner('FREE CAMERA — C TO TAKE BACK COMMAND', 1.8);
   }
@@ -587,10 +593,36 @@ class Game {
       if (d < best) { best = d; target = e; }
     }
 
+    // Now and then he decides to finish a man BY HAND: dismounts, closes
+    // in, and performs the full headlock-and-knife kill (same as U)
+    ai.finCd -= dt;
+    if (!ai.finTarget && ai.finCd <= 0 && target && best < 10 &&
+        target.type !== 'cavalry' && Math.random() < 0.6) {
+      ai.finTarget = target;
+    }
+    if (ai.finTarget && (ai.finTarget.dead || ai.finTarget.dying || ai.finTarget.inFinisher)) {
+      ai.finTarget = null;
+    }
+
     // Movement: advance when far, back off when crowded, otherwise circle
     // the mark like a cavalry skirmisher (flipping direction now and then)
     let moveDir = null;
-    if (target) {
+    if (ai.finTarget) {
+      // Stalking in for the knife
+      const ft = ai.finTarget;
+      const to = new THREE.Vector3().subVectors(ft.group.position, P.position);
+      to.y = 0;
+      const d = to.length();
+      to.normalize();
+      if (P.mounted && d < 8) P.toggleMount();
+      if (!P.mounted && d < 2.9) {
+        ai.finCd = 16 + Math.random() * 14;
+        ai.finTarget = null;
+        this._startFinisher(ft);
+        return; // the cutscene takes over
+      }
+      moveDir = to;
+    } else if (target) {
       const to = new THREE.Vector3().subVectors(target.group.position, P.position);
       to.y = 0;
       const d = to.length();
@@ -601,6 +633,29 @@ class Game {
       if (d > 45) moveDir = to.clone();
       else if (d < 16) moveDir = to.clone().negate().addScaledVector(side, 0.6).normalize();
       else moveDir = side.addScaledVector(to, 0.15).normalize();
+    } else if (!P.mounted) {
+      // Quiet field, man on foot: walk back to the horse and swing up
+      const h = P.meshRoot.position;
+      const dh = Math.hypot(h.x - P.position.x, h.z - P.position.z);
+      if (dh < 3.2) P.toggleMount();
+      else moveDir = new THREE.Vector3(h.x - P.position.x, 0, h.z - P.position.z).normalize();
+    } else {
+      // Nothing to shoot: drift around the battlefield, pausing to look
+      ai.wanderT -= dt;
+      if (ai.wanderT <= 0) {
+        ai.wanderT = 2.5 + Math.random() * 3.5;
+        if (Math.random() < 0.65) {
+          const a = Math.random() * Math.PI * 2;
+          ai.wanderDir = new THREE.Vector3(Math.sin(a), 0, Math.cos(a));
+        } else {
+          ai.wanderDir = null; // just stand a moment, taking in the field
+        }
+      }
+      // Keep the wandering inside the battlefield
+      if (ai.wanderDir && P.position.length() > 90) {
+        ai.wanderDir = P.position.clone().multiplyScalar(-1).setY(0).normalize();
+      }
+      moveDir = ai.wanderDir ? ai.wanderDir.clone() : null;
     }
 
     // Drive the real player through a synthetic camera/input pair so all
@@ -630,10 +685,24 @@ class Game {
       }
       return;
     }
-    if (!target || best >= 65) return;
+    // Stalking a finisher victim: the gun stays quiet — this one's personal
+    if (ai.finTarget) return;
+
+    if (!target || best >= 55) return;
+
+    // He's a decent shot, not a machine: now and then he plain hesitates
+    ai.holdT -= dt;
+    if (ai.holdT <= 0) {
+      ai.holdT = 4 + Math.random() * 5;
+      ai.holdFor = 1 + Math.random() * 1.2;
+    }
+    if (ai.holdFor > 0) {
+      ai.holdFor -= dt;
+      return;
+    }
 
     ai.burstT += dt;
-    const inBurst = (ai.burstT % 1.1) < 0.6;
+    const inBurst = (ai.burstT % 1.35) < 0.55; // shorter bursts, longer gaps
     ai.fireT -= dt;
     if (inBurst && ai.fireT <= 0) {
       ai.fireT = 60 / 450;
@@ -643,11 +712,11 @@ class Game {
       const from = new THREE.Vector3();
       P.muzzle.getWorldPosition(from);
       const at = target.group.position.clone();
-      at.y += 1.3 + (Math.random() - 0.5) * 0.5;
-      at.x += (Math.random() - 0.5) * 1.2;
-      at.z += (Math.random() - 0.5) * 1.2;
+      at.y += 1.3 + (Math.random() - 0.5) * 0.8;
+      at.x += (Math.random() - 0.5) * 2.0;
+      at.z += (Math.random() - 0.5) * 2.0;
       this.particles.tracer(from, at);
-      if (Math.random() < 0.62) {
+      if (Math.random() < 0.42) {
         const impulse = at.clone().sub(from).setY(0).normalize().multiplyScalar(12);
         const killed = target.takeDamage(20, impulse);
         this.particles.blood(at, killed);
@@ -998,7 +1067,8 @@ class Game {
     this.camCtrl._zoomTarget = F.camSave.zoom;
     this.camCtrl.yaw = F.camSave.yaw;
     this.camCtrl.pitch = F.camSave.pitch;
-    this.player.setFirstPerson(this.camCtrl.view.fp, this.camera);
+    // (never re-enter first person while the spectator cam is flying)
+    this.player.setFirstPerson(this.camCtrl.view.fp && !this.freeCam, this.camera);
   }
 
   _resetRun() {
