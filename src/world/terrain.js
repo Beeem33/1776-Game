@@ -19,6 +19,7 @@ export const dynamicCraters = [];
 const MAX_DYNAMIC_CRATERS = 18;
 let _groundGeo = null;
 let _grassMesh = null;
+let _flowerMeshes = [];
 
 function craterDip(h, x, z, list) {
   for (let i = 0; i < list.length; i++) {
@@ -87,6 +88,22 @@ export function blastCrater(scene, x, z, scale = 1) {
         }
       }
       _grassMesh.instanceMatrix.needsUpdate = true;
+    }
+
+    // ...and so are the wildflowers — nothing pretty floats over the hole
+    for (const fm of _flowerMeshes) {
+      const arr = fm.instanceMatrix.array;
+      const rr = r * 1.15;
+      for (let i = 0; i < fm.count; i++) {
+        const bx = arr[i * 16 + 12];
+        const bz = arr[i * 16 + 14];
+        const ddx = bx - x;
+        const ddz = bz - z;
+        if (ddx * ddx + ddz * ddz < rr * rr) {
+          for (let c = 0; c < 12; c++) arr[i * 16 + c] = 0;
+        }
+      }
+      fm.instanceMatrix.needsUpdate = true;
     }
   }
 
@@ -399,4 +416,5 @@ function addFlowers(scene) {
   if (blooms.instanceColor) blooms.instanceColor.needsUpdate = true;
   scene.add(stems);
   scene.add(blooms);
+  _flowerMeshes = [stems, blooms]; // craters vaporize flowers too
 }

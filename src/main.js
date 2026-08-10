@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { createWorld, updateSun, houseChunks } from './world/world.js';
-import { colliders, removeCollider } from './world/colliders.js';
+import { colliders, removeCollider, resolvePoint } from './world/colliders.js';
 import { windClock, terrainHeight, blastCrater } from './world/terrain.js';
 import { Weather } from './world/weather.js';
 import { DebrisManager } from './world/debris.js';
@@ -299,6 +299,26 @@ class Game {
     // Carve nearby house walls into flying rubble — anything standing over
     // the new bowl loses its footing and comes down with it
     this._blastHouseChunks(at, Math.max(r * 0.6 + 1.6, r * 0.95));
+
+    // House walls left hanging over the new bowl lose their footing and
+    // crumble down into it (low chunks only — rooflines stay up)
+    const tmpU = new THREE.Vector3();
+    for (let i = houseChunks.length - 1; i >= 0; i--) {
+      const chunk = houseChunks[i];
+      chunk.getWorldPosition(tmpU);
+      if (Math.hypot(tmpU.x - at.x, tmpU.z - at.z) > r * 2) continue;
+      const clearance = tmpU.y - terrainHeight(tmpU.x, tmpU.z);
+      if (clearance < 1.4 || tmpU.y - at.y > 4.5) continue;
+      houseChunks.splice(i, 1);
+      this.scene.attach(chunk);
+      const slide = tmpU.clone().sub(at);
+      slide.y = 0;
+      slide.setLength(-1.2); // slumps INTO the hole
+      slide.y = -1;
+      this.debris.add(chunk, slide, new THREE.Vector3(
+        (Math.random() - 0.5) * 6, (Math.random() - 0.5) * 4, (Math.random() - 0.5) * 6
+      ));
+    }
 
     // Fences undermined by the blast splinter into flying rails
     for (let i = colliders.length - 1; i >= 0; i--) {
@@ -729,14 +749,13 @@ class Game {
     const base = P.group.position.clone();
     const right = new THREE.Vector3(I.walkDir.z, 0, -I.walkDir.x);
     if (t < 4.3) {
-      // Shot 1 — boots in the dirt: low tracking close-up on the feet
-      const cam = base.clone()
-        .addScaledVector(right, 1.5)
-        .addScaledVector(I.walkDir, 1.1);
-      cam.y = terrainHeight(cam.x, cam.z) + 0.45;
+      // Shot 1 — boots in the dirt: dead ahead of his feet, retreating as
+      // he marches straight into the lens
+      const cam = base.clone().addScaledVector(I.walkDir, 2.1);
+      cam.y = terrainHeight(cam.x, cam.z) + 0.42;
       this.camera.position.copy(cam);
-      const look = base.clone().addScaledVector(I.walkDir, 0.2);
-      look.y += 0.35;
+      const look = base.clone().addScaledVector(I.walkDir, 0.3);
+      look.y += 0.3;
       this.camera.lookAt(look);
     } else if (t < 6.6) {
       // Shot 2 — a long, wide shot: one small figure crossing the field
@@ -1172,6 +1191,25 @@ class Game {
         while (dyaw < -Math.PI) dyaw += Math.PI * 2;
         CN.piece.rotation.y += dyaw * Math.min(1, 9 * dt);
 
+        // W/S roll the piece across the field — the gunner pushes from the
+        // trail and marches with it, locked in behind the gun
+        const push = (this.input.isDown('KeyW') ? 1 : 0) - (this.input.isDown('KeyS') ? 1 : 0);
+        if (push !== 0) {
+          const fx = Math.sin(CN.piece.rotation.y);
+          const fz = Math.cos(CN.piece.rotation.y);
+          CN.piece.position.x += fx * push * 3.4 * dt;
+          CN.piece.position.z += fz * push * 3.4 * dt;
+          resolvePoint(CN.piece.position, 1.1); // trees/walls stop the gun
+          CN.piece.position.y = terrainHeight(CN.piece.position.x, CN.piece.position.z);
+          P._footPhase += dt * 6;
+          const sw = Math.sin(P._footPhase) * 0.5;
+          P.footLegs[0].rotation.x = sw;
+          P.footLegs[1].rotation.x = -sw;
+        } else {
+          P.footLegs[0].rotation.x *= 1 - Math.min(1, 8 * dt);
+          P.footLegs[1].rotation.x *= 1 - Math.min(1, 8 * dt);
+        }
+
         // Gunner stands planted at the trail
         P.velocity.set(0, 0, 0);
         P.group.position.set(
@@ -1181,6 +1219,7 @@ class Game {
         P.group.position.y = terrainHeight(P.group.position.x, P.group.position.z);
         P.heading = CN.piece.rotation.y;
         P.group.rotation.y = P.heading;
+        P.riderUpper.rotation.y = 0; // squared up behind the breech
 
         this.camCtrl.bodyLift = 0.3; // ride high enough to see over the piece
         P.eyeAnchor.getWorldPosition(this._eyePos);
@@ -1239,7 +1278,7 @@ class Game {
       const freeGun = !this.player.mounted ? this._nearbyFreeCannon(3.4) : null;
       if (freeGun) {
         this.cannon = { piece: freeGun.piece, tip: freeGun.tip, cd: 0.6 };
-        this.ui.showBanner('CANNON MANNED — LMB FIRE · E STEP AWAY', 1.8);
+        this.ui.showBanner('CANNON MANNED — W/S PUSH · LMB FIRE · E STEP AWAY', 2.2);
       } else {
         const result = this.player.toggleMount();
         if (result === 'dismounted') this.ui.showBanner('ON FOOT — E NEAR HORSE TO MOUNT', 1.6);
